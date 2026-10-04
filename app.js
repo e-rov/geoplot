@@ -1,0 +1,2066 @@
+/* E.ROV GeoPlot — application UI. Depends on core.js (window.Geo). */
+(function () {
+  'use strict';
+  const G = window.Geo;
+  const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fx = (v, d = 2) => (v == null || !isFinite(v)) ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const LOT_COLORS = ['#d9480f', '#0c8599', '#7048e8', '#2b8a3e', '#c2255c', '#1971c2', '#e67700', '#868e96'];
+  const clone = o => JSON.parse(JSON.stringify(o));
+  const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+  const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } };
+
+  /* ---------------- icons ---------------- */
+  const IC = {
+    home: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/>',
+    projects: '<path d="M3 6h6l2 2h10v11H3z"/>',
+    plot: '<path d="M5 18L8 6l11 2-3 11z"/><circle cx="5" cy="18" r="1.4"/><circle cx="8" cy="6" r="1.4"/><circle cx="19" cy="8" r="1.4"/><circle cx="16" cy="19" r="1.4"/>',
+    scan: '<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M7 12h10"/>',
+    map: '<path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/>',
+    lots: '<path d="M3 4h8v7H3zM11 4h10v7H11zM3 11h12v9H3zM15 11h6v9h-6z"/>',
+    move: '<path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4v4h-4"/><path d="M12 9v6M9 12h6"/>',
+    subdivide: '<path d="M4 4h16v16H4z"/><path d="M11 4l2 16M4 13h8"/>',
+    bestfit: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
+    returns: '<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/>',
+    plan: '<path d="M3 4h18v16H3z"/><path d="M3 15h18M13 15v5"/><path d="M7 7l3 4 4-3"/>',
+    contours: '<path d="M3 18c3-4 6-4 9-1s6 3 9-1"/><path d="M3 12c3-4 6-4 9-1s6 3 9-1"/><path d="M5 6c2-2 5-2 7 0s5 2 7 0"/>',
+    convert: '<path d="M4 8h14l-3-3"/><path d="M20 16H6l3 3"/>',
+    tiepoints: '<path d="M12 3l8 16H4z"/><circle cx="12" cy="14" r="1.6"/>',
+    more: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>', minus: '<path d="M5 12h14"/>',
+    fit: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+    trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+    copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
+    download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+    labels: '<path d="M4 7h10M4 12h16M4 17h7"/>',
+    sparkle: '<path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/>'
+  };
+  const icon = (n, cls = '') => `<svg viewBox="0 0 24 24" class="${cls}" aria-hidden="true">${IC[n] || ''}</svg>`;
+
+  const MODS = [
+    { id: 'home', label: 'Start', group: 'Project', desc: 'Overview and shortcuts' },
+    { id: 'projects', label: 'Projects', group: 'Project', desc: 'Open, create and share project files' },
+    { id: 'plot', label: 'Plot TD', group: 'Plot', desc: 'Enter a technical description and plot it with closure and area' },
+    { id: 'scan', label: 'Scan to plot', group: 'Plot', desc: 'Read a TD from pasted text or a photo of a title or plan' },
+    { id: 'map', label: 'Satellite view', group: 'Plot', desc: 'Lay the lot over imagery to check where it falls' },
+    { id: 'lots', label: 'Multi-lot check', group: 'Plot', desc: 'Adjust several lots and check common corners and overlaps' },
+    { id: 'move', label: 'Rotate & move', group: 'Edit', desc: 'Rotate or shift a lot and rewrite its TD' },
+    { id: 'subdivide', label: 'Subdivision', group: 'Edit', desc: 'Split a lot by area, by corner or into equal parts' },
+    { id: 'bestfit', label: 'Best fit', group: 'Edit', desc: 'Least-squares fit of plotted corners onto found monuments' },
+    { id: 'returns', label: 'Survey returns', group: 'Output', desc: 'Lot data computation, area and TD write-up' },
+    { id: 'plan', label: 'Location plan', group: 'Output', desc: 'Location plan sheet with vicinity map and lot data' },
+    { id: 'contours', label: 'Contours', group: 'Tools', desc: 'Topographic contours from N, E, Z points' },
+    { id: 'convert', label: 'Geo ↔ Grid', group: 'Tools', desc: 'PRS92 PTM, Luzon 1911, UTM and lat/long conversion' },
+    { id: 'tiepoints', label: 'Tie points', group: 'Tools', desc: 'Your list of BLLM and other reference monuments' }
+  ];
+  const BOTTOM = ['plot', 'map', 'scan', 'returns', 'more'];
+
+  /* ---------------- state ---------------- */
+  const S = {
+    project: null, isExample: true, dirty: false, view: 'plot', lotId: null,
+    projects: [], tiepoints: [], mode: 'local', caps: {}, inFrame: !!window.claude,
+    labels: true, lastSaved: null, saving: false
+  };
+  let capsReady;
+
+  function newLot(n, idx) {
+    return {
+      id: uid(), name: 'Lot ' + n, color: LOT_COLORS[(idx ?? 0) % LOT_COLORS.length], mode: 'td',
+      tie: { name: '', N: '', E: '' }, tieLine: { b: '', d: '' },
+      lines: [{ b: '', d: '' }, { b: '', d: '' }, { b: '', d: '' }, { b: '', d: '' }],
+      corners: [], adjust: 'none', xf: { rot: 0, dN: 0, dE: 0, pivot: 'centroid' }, visible: true, claimant: '', surveyNo: ''
+    };
+  }
+  function newProject(name) {
+    return {
+      id: uid(), name: name || 'Untitled project', sys: 'PRS92_Z3', minPrec: 5000, minutesOnly: true,
+      location: '', surveyor: 'Engr. Richard Charles Vasquez', license: '', company: 'E.ROV Surveying Services',
+      lots: [newLot(1, 0)], topo: { text: '', interval: 1, index: 5, maxEdge: 0 }, control: [],
+      plan: { title: '', claimant: '', surveyNo: '', date: '', vicinity: '' }, created: Date.now(), updated: Date.now()
+    };
+  }
+  function exampleProject() {
+    const p = newProject('Example — Lots 1234-A & B, Imus');
+    p.location = 'Brgy. Anabu I, Imus, Cavite';
+    // tie point placed near Imus for the example only
+    const tie = G.convert({ lat: 14.4100, lon: 120.9420 }, 'WGS84_GEO', 'PRS92_Z3');
+    const T = { N: +tie.N.toFixed(3), E: +tie.E.toFixed(3) };
+    const mk = (offs) => offs.map(([e, n]) => ({ E: T.E + e, N: T.N + n }));
+    const A = mk([[240, 190], [252, 221.4], [277.3, 214.1], [268.2, 183.0]]);
+    const B = mk([[268.2, 183.0], [277.3, 214.1], [300.6, 207.2], [291.4, 176.6]]);
+    p.lots = [A, B].map((c, i) => {
+      const L = newLot('1234-' + 'AB'[i], i);
+      L.tie = { name: 'BLLM No. 1, Imus Cadastre (example)', N: T.N.toFixed(3), E: T.E.toFixed(3) };
+      const td = G.lotFromCorners(T, c, { minutesOnly: true });
+      L.tieLine = td.tieLine; L.lines = td.lines; L.claimant = i ? 'Maria Santos (example)' : 'Juan dela Cruz (example)';
+      return L;
+    });
+    // nudge one distance by 3 cm so the example shows a real misclosure
+    p.lots[0].lines[2].d = (parseFloat(p.lots[0].lines[2].d) + 0.03).toFixed(2);
+    p.lots[0].adjust = 'compass';
+    p.plan.title = 'Lot 1234-A, Psd-04-012345 (example)';
+    p.plan.claimant = 'Juan dela Cruz (example)';
+    return p;
+  }
+
+  const lot = () => S.project.lots.find(l => l.id === S.lotId) || S.project.lots[0];
+  const sys = () => G.SYSTEMS[S.project.sys];
+  const comp = L => G.computeLot(L);
+  const toLL = p => { try { return G.convert(p, S.project.sys, 'WGS84_GEO'); } catch (e) { return null; } };
+  function precClass(c) {
+    if (!c || !c.closure) return 'muted';
+    const p = c.closure.precision;
+    if (!isFinite(p)) return 'good';
+    return p >= S.project.minPrec ? 'good' : p >= S.project.minPrec / 2 ? 'warn' : 'bad';
+  }
+  const precText = c => !c?.closure ? '—' : (!isFinite(c.closure.precision) ? 'closed' : '1:' + Math.round(c.closure.precision).toLocaleString('en-US'));
+
+  /* ---------------- toast & modal ---------------- */
+  let toastT;
+  function toast(msg, ms = 2600) {
+    const h = $('#toastHost');
+    h.innerHTML = `<div class="toast" role="status">${esc(msg)}</div>`;
+    clearTimeout(toastT); toastT = setTimeout(() => { h.innerHTML = ''; }, ms);
+  }
+  function modal(html, bind) {
+    const host = $('#modalHost');
+    host.innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true">${html}</div></div>`;
+    const close = () => { host.innerHTML = ''; };
+    host.firstChild.addEventListener('click', e => { if (e.target === host.firstChild || e.target.closest('[data-close]')) close(); });
+    bind && bind(host.querySelector('.modal'), close);
+    const f = host.querySelector('input,button'); f && f.focus();
+    return close;
+  }
+  function confirmBox(title, text, okLabel, onOk) {
+    modal(`<h2>${esc(title)}</h2><p>${esc(text)}</p><div class="btns" style="justify-content:flex-end;margin-top:14px">
+      <button class="btn" data-close>Cancel</button><button class="btn primary" id="cOk">${esc(okLabel)}</button></div>`,
+      (m, close) => { $('#cOk', m).onclick = () => { close(); onOk(); }; });
+  }
+
+  /* ---------------- clipboard & files ---------------- */
+  async function copyText(text, label = 'Copied') {
+    try { await navigator.clipboard.writeText(text); toast(label); }
+    catch (e) {
+      modal(`<h2>Copy</h2><p class="hint">Select all and copy.</p><textarea rows="10" id="cpT">${esc(text)}</textarea><div class="btns" style="justify-content:flex-end;margin-top:10px"><button class="btn" data-close>Close</button></div>`,
+        m => { const t = $('#cpT', m); t.focus(); t.select(); });
+    }
+  }
+  const ALLOWED = ['gif', 'png', 'jpg', 'jpeg', 'webp', 'txt', 'json', 'md', 'csv', 'html', 'svg', 'pdf', 'zip', 'xlsx', 'docx'];
+  async function saveFile(filename, data) {
+    await capsReady;
+    const dl = S.caps.downloads;
+    if (dl) {
+      let fn = filename;
+      const ext = fn.split('.').pop().toLowerCase();
+      let renamed = false;
+      if (!ALLOWED.includes(ext)) { fn = fn + '.txt'; renamed = true; }
+      try {
+        await dl.save({ filename: fn, data });
+        toast(renamed ? 'Saved as ' + fn + ' — remove the .txt ending before opening in CAD/Google Earth.' : 'Saved ' + fn, renamed ? 6000 : 2600);
+      } catch (e) {
+        if (e && e.code === 'declined') return;
+        toast(e && e.code === 'rejected_extension' ? 'That file type is not allowed here. Use Copy instead.' : 'Could not save the file here. Use Copy instead.');
+      }
+      return;
+    }
+    if (S.inFrame) { toast('File saving is not available in this view. Use Copy instead.'); return; }
+    const blob = data instanceof Blob ? data : new Blob([data], { type: 'application/octet-stream' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  }
+
+  /* ---------------- storage ---------------- */
+  const LS_P = 'geoplot.projects', LS_T = 'geoplot.tiepoints', LS_LAST = 'geoplot.last';
+  const Store = {
+    db: null,
+    async init() {
+      const use = n => (window.claude && window.claude.use ? window.claude.use(n).catch(() => null) : Promise.resolve(null));
+      const [db, user, sample, downloads] = await Promise.all([use('db'), use('user'), use('sample'), use('downloads')]);
+      S.caps = { db, user, sample, downloads };
+      if (db) {
+        this.db = db; S.mode = 'shared';
+        db.collection('projects').orderBy('updated', 'desc').limit(300).onSnapshot(snap => {
+          S.projects = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          onProjectsChanged();
+        }, err => { console.warn('projects', err); });
+        db.collection('tiepoints').limit(1000).onSnapshot(snap => {
+          S.tiepoints = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true }));
+          onTiepointsChanged();
+        }, err => { console.warn('tiepoints', err); });
+        if (user && user.can) { try { S.canWrite = await user.can('data.write'); } catch (e) { S.canWrite = null; } }
+      } else {
+        S.mode = 'local';
+        S.projects = lsGet(LS_P, []);
+        S.tiepoints = lsGet(LS_T, []);
+        onProjectsChanged(); onTiepointsChanged();
+      }
+    },
+    async saveProject(p) {
+      p.updated = Date.now();
+      const rec = { name: p.name, updated: p.updated, lots: p.lots.length, data: p };
+      if (this.db) {
+        await this.db.doc('projects/' + p.id).set(rec);
+      } else {
+        const all = lsGet(LS_P, []).filter(x => x.id !== p.id);
+        all.unshift({ id: p.id, ...rec });
+        lsSet(LS_P, all); S.projects = all; onProjectsChanged();
+      }
+    },
+    async deleteProject(id) {
+      if (this.db) await this.db.doc('projects/' + id).delete();
+      else { const all = lsGet(LS_P, []).filter(x => x.id !== id); lsSet(LS_P, all); S.projects = all; onProjectsChanged(); }
+    },
+    async saveTie(t) {
+      t.id = t.id || uid(); t.updated = Date.now();
+      if (this.db) { const { id, ...rest } = t; await this.db.doc('tiepoints/' + id).set(rest); }
+      else { const all = lsGet(LS_T, []).filter(x => x.id !== t.id); all.push(t); lsSet(LS_T, all); S.tiepoints = all; onTiepointsChanged(); }
+    },
+    async saveTies(list) {
+      for (const t of list) await this.saveTie(t); // one write per document, in sequence
+    },
+    async deleteTie(id) {
+      if (this.db) await this.db.doc('tiepoints/' + id).delete();
+      else { const all = lsGet(LS_T, []).filter(x => x.id !== id); lsSet(LS_T, all); S.tiepoints = all; onTiepointsChanged(); }
+    }
+  };
+
+  function onProjectsChanged() {
+    // first load: reopen the last project this viewer had open
+    if (S.isExample && !S.dirty && !S._reopened) {
+      const last = lsGet(LS_LAST, null);
+      const rec = last && S.projects.find(p => p.id === last);
+      if (rec && rec.data) { S._reopened = true; openProject(clone(rec.data), false); return; }
+    }
+    // another staff member saved the open project — pick it up if we have no pending edits
+    if (!S.isExample && !S.dirty && S.project) {
+      const rec = S.projects.find(p => p.id === S.project.id);
+      if (rec && rec.data && rec.updated > (S.project.updated || 0) + 500) {
+        const keepLot = S.lotId; S.project = clone(rec.data);
+        if (S.project.lots.some(l => l.id === keepLot)) S.lotId = keepLot; else S.lotId = S.project.lots[0]?.id;
+        updateHeader(); if (S.view === 'projects' || S.view === 'home') render(); else refreshView();
+        return;
+      }
+    }
+    if (S.view === 'projects' || S.view === 'home') render();
+  }
+  function onTiepointsChanged() {
+    if (S.view === 'tiepoints') render();
+    const dl = $('#tieList'); if (dl) dl.innerHTML = tieOptions();
+  }
+  const tieOptions = () => S.tiepoints.map(t => `<option value="${esc(t.name)}">${esc([t.municipality, t.province].filter(Boolean).join(', '))}</option>`).join('');
+
+  function openProject(p, isExample) {
+    S.project = p; S.isExample = !!isExample; S.dirty = false;
+    S.lotId = p.lots[0]?.id;
+    if (!isExample) lsSet(LS_LAST, p.id);
+    updateHeader(); render();
+  }
+
+  const autosave = debounce(() => { if (!S.isExample && S.dirty) saveNow(); }, 1800);
+  function markDirty() {
+    S.dirty = true; updateHeader();
+    if (!S.isExample) autosave();
+  }
+  async function saveNow(asNew) {
+    if (S.saving) return;
+    if (S.isExample || asNew) {
+      const p = S.project;
+      p.id = uid(); p.created = Date.now();
+      if (S.isExample) p.name = p.name.replace(/^Example — /, '');
+      S.isExample = false;
+    }
+    S.saving = true; updateHeader();
+    try {
+      await Store.saveProject(S.project);
+      S.dirty = false; S.lastSaved = Date.now(); lsSet(LS_LAST, S.project.id);
+    } catch (e) {
+      const code = e && e.code;
+      toast(code === 'quota_exceeded' ? 'Storage is full. Delete old projects, then save again.' :
+        code === 'invalid_argument' ? 'You have view-only access, so changes cannot be saved. Ask the owner for Contributor access.' :
+          'Could not save just now. Your changes are still on screen; press Save to try again.', 5000);
+    }
+    S.saving = false; updateHeader();
+  }
+
+  function updateHeader() {
+    if (!S.project) return;
+    $('#projName').textContent = S.project.name;
+    const st = $('#saveState'), b = $('#saveBtn');
+    st.className = 'save-state';
+    if (S.isExample) { st.textContent = 'Example · not saved'; b.textContent = 'Save as project'; }
+    else if (S.saving) { st.textContent = 'Saving…'; b.textContent = 'Save'; }
+    else if (S.dirty) { st.textContent = 'Unsaved changes'; st.classList.add('dirty'); b.textContent = 'Save'; }
+    else { st.textContent = S.mode === 'shared' ? 'Saved · shared' : 'Saved on this device'; b.textContent = 'Save'; }
+  }
+
+  /* ---------------- navigation ---------------- */
+  function buildNav() {
+    const groups = {};
+    MODS.forEach(m => (groups[m.group] = groups[m.group] || []).push(m));
+    $('#sideNav').innerHTML = Object.entries(groups).map(([g, ms]) => `<div class="navgroup"><h4>${g}</h4>${ms.map(m =>
+      `<button class="navbtn" data-nav="${m.id}">${icon(m.id)}<span>${m.label}</span></button>`).join('')}</div>`).join('') +
+      `<div class="navgroup"><h4>View</h4><button class="navbtn" data-action="theme">${icon('labels')}<span>Light / dark</span></button></div>`;
+    $('#bottomNav').innerHTML = BOTTOM.map(id => {
+      const m = MODS.find(x => x.id === id);
+      return `<button class="navbtn" data-nav="${id}">${icon(id)}<span>${m ? m.label.replace('Satellite view', 'Map').replace('Survey returns', 'Returns').replace('Scan to plot', 'Scan') : 'More'}</span></button>`;
+    }).join('');
+  }
+  function markNav() {
+    $$('[data-nav]').forEach(b => b.setAttribute('aria-current', b.dataset.nav === S.view || (b.dataset.nav === 'more' && !BOTTOM.includes(S.view)) ? 'page' : 'false'));
+  }
+  function go(view) {
+    if (view === 'more') {
+      modal(`<h2>All tools</h2><div class="sheet-menu">${MODS.map(m => `<button class="navbtn" data-go="${m.id}">${icon(m.id)}<span>${m.label}</span></button>`).join('')}</div>
+        <div class="btns" style="justify-content:flex-end;margin-top:12px"><button class="btn" data-close>Close</button></div>`,
+        (m, close) => m.addEventListener('click', e => { const b = e.target.closest('[data-go]'); if (b) { close(); go(b.dataset.go); } }));
+      return;
+    }
+    S.view = view;
+    try { if (location.hash !== '#' + view) history.replaceState(null, '', '#' + view); } catch (e) { /* ignore */ }
+    render();
+    $('#view').scrollTop = 0;
+  }
+
+  document.addEventListener('click', e => {
+    const n = e.target.closest('[data-nav]');
+    if (n) { go(n.dataset.nav); return; }
+    const a = e.target.closest('[data-action]');
+    if (!a) return;
+    if (a.dataset.action === 'save-project') saveNow();
+    if (a.dataset.action === 'theme') {
+      const r = document.documentElement, cur = r.getAttribute('data-theme');
+      const dark = cur ? cur === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+      r.setAttribute('data-theme', dark ? 'light' : 'dark');
+      lsSet('geoplot.theme', dark ? 'light' : 'dark');
+      refreshView();
+    }
+  });
+
+  /* ---------------- plot view (grid coordinates, SVG) ---------------- */
+  class PlotView {
+    constructor(host, sceneFn) {
+      this.host = host; this.sceneFn = sceneFn;
+      host.classList.add('plot');
+      host.innerHTML = `<svg class="draw" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="tools noprint">
+          <button class="btn" data-z="fit" title="Fit to lot" aria-label="Fit to lot">${icon('fit')}</button>
+          <button class="btn" data-z="in" title="Zoom in" aria-label="Zoom in">${icon('plus')}</button>
+          <button class="btn" data-z="out" title="Zoom out" aria-label="Zoom out">${icon('minus')}</button>
+          <button class="btn" data-z="lab" title="Show or hide line labels" aria-label="Line labels">${icon('labels')}</button>
+        </div><div class="coord"></div>`;
+      this.svg = $('svg', host); this.coord = $('.coord', host);
+      this.s = 1; this.cx = 0; this.cy = 0; this.fitted = false;
+      this.ptrs = new Map();
+      host.querySelector('.tools').addEventListener('click', e => {
+        const b = e.target.closest('[data-z]'); if (!b) return;
+        if (b.dataset.z === 'fit') this.fit();
+        if (b.dataset.z === 'in') this.zoomAt(1.5);
+        if (b.dataset.z === 'out') this.zoomAt(1 / 1.5);
+        if (b.dataset.z === 'lab') { S.labels = !S.labels; this.draw(); }
+      });
+      this.svg.addEventListener('wheel', e => { e.preventDefault(); const r = this.svg.getBoundingClientRect(); this.zoomAt(Math.pow(1.0015, -e.deltaY), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+      this.svg.addEventListener('pointerdown', e => { this.svg.setPointerCapture(e.pointerId); this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY }); });
+      this.svg.addEventListener('pointermove', e => {
+        const r = this.svg.getBoundingClientRect();
+        const w = this.toWorld(e.clientX - r.left, e.clientY - r.top);
+        this.coord.textContent = 'N ' + fx(w.N, 3) + '  E ' + fx(w.E, 3);
+        if (!this.ptrs.has(e.pointerId)) return;
+        const prev = this.ptrs.get(e.pointerId);
+        if (this.ptrs.size === 1) {
+          this.cx -= (e.clientX - prev.x) / this.s; this.cy += (e.clientY - prev.y) / this.s;
+          this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY }); this.schedule();
+        } else if (this.ptrs.size === 2) {
+          const [a, b] = [...this.ptrs.values()];
+          const d0 = Math.hypot(a.x - b.x, a.y - b.y);
+          this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+          const [c, d] = [...this.ptrs.values()];
+          const d1 = Math.hypot(c.x - d.x, c.y - d.y);
+          if (d0 > 0) this.zoomAt(d1 / d0, (c.x + d.x) / 2 - r.left, (c.y + d.y) / 2 - r.top);
+        }
+      });
+      const up = e => this.ptrs.delete(e.pointerId);
+      this.svg.addEventListener('pointerup', up); this.svg.addEventListener('pointercancel', up);
+      this.svg.addEventListener('dblclick', e => { const r = this.svg.getBoundingClientRect(); this.zoomAt(2, e.clientX - r.left, e.clientY - r.top); });
+      this.ro = new ResizeObserver(() => { if (!this.fitted) this.fit(); else this.draw(); });
+      this.ro.observe(host);
+    }
+    get w() { return this.host.clientWidth || 600; }
+    get h() { return this.host.clientHeight || 400; }
+    toScreen(p) { return [(p.E - this.cx) * this.s + this.w / 2, this.h / 2 - (p.N - this.cy) * this.s]; }
+    toWorld(x, y) { return { E: this.cx + (x - this.w / 2) / this.s, N: this.cy - (y - this.h / 2) / this.s }; }
+    zoomAt(f, x = this.w / 2, y = this.h / 2) {
+      const before = this.toWorld(x, y);
+      this.s = Math.min(Math.max(this.s * f, 1e-5), 2000);
+      const after = this.toWorld(x, y);
+      this.cx += before.E - after.E; this.cy += before.N - after.N;
+      this.schedule();
+    }
+    schedule() { if (this.raf) return; this.raf = requestAnimationFrame(() => { this.raf = 0; this.draw(); }); }
+    fit(all) {
+      const sc = this.sceneFn() || {};
+      let pts = [];
+      (sc.items || []).forEach(it => { if (it.fit === false && !all) return; if (it.pts) pts.push(...it.pts); if (it.p) pts.push(it.p); });
+      if (!pts.length) (sc.items || []).forEach(it => { if (it.pts) pts.push(...it.pts); if (it.p) pts.push(it.p); });
+      if (!pts.length) { this.draw(); return; }
+      let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
+      pts.forEach(p => { if (!isFinite(p.E) || !isFinite(p.N)) return; minE = Math.min(minE, p.E); maxE = Math.max(maxE, p.E); minN = Math.min(minN, p.N); maxN = Math.max(maxN, p.N); });
+      if (!isFinite(minE)) { this.draw(); return; }
+      const pad = 56, w = Math.max(this.w - 2 * pad, 50), h = Math.max(this.h - 2 * pad, 50);
+      this.s = Math.min(w / Math.max(maxE - minE, 1), h / Math.max(maxN - minN, 1));
+      this.cx = (minE + maxE) / 2; this.cy = (minN + maxN) / 2; this.fitted = true;
+      this.draw();
+    }
+    draw() {
+      const sc = this.sceneFn() || { items: [] };
+      const W = this.w, H = this.h, cs = getComputedStyle(document.documentElement);
+      const rc = v => (typeof v === 'string' && v.startsWith('var(')) ? cs.getPropertyValue(v.slice(4, -1)).trim() : v;
+      const ink = cs.getPropertyValue('--ink').trim(), muted = cs.getPropertyValue('--muted').trim(), grid = cs.getPropertyValue('--grid').trim(), bg = cs.getPropertyValue('--plot-bg').trim();
+      const out = [];
+      // grid
+      const target = 90 / this.s, mag = Math.pow(10, Math.floor(Math.log10(target)));
+      const step = [1, 2, 5, 10].map(k => k * mag).find(v => v >= target) || target;
+      const tl = this.toWorld(0, 0), br = this.toWorld(W, H);
+      let g = '';
+      if ((br.E - tl.E) / step < 200 && (tl.N - br.N) / step < 200) {
+        for (let e = Math.ceil(tl.E / step) * step; e <= br.E; e += step) { const x = this.toScreen({ E: e, N: 0 })[0]; g += `M${x.toFixed(1)} 0V${H}`; }
+        for (let n = Math.ceil(br.N / step) * step; n <= tl.N; n += step) { const y = this.toScreen({ E: 0, N: n })[1]; g += `M0 ${y.toFixed(1)}H${W}`; }
+      }
+      out.push(`<path d="${g}" stroke="${grid}" stroke-width="1" fill="none"/>`);
+      const P = p => this.toScreen(p).map(v => v.toFixed(1)).join(' ');
+      const labels = [];
+      for (const it0 of sc.items || []) {
+        const it = { ...it0, stroke: rc(it0.stroke), fill: rc(it0.fill), color: rc(it0.color), lc: rc(it0.lc) };
+        if (it.t === 'poly' || it.t === 'line') {
+          if (!it.pts || it.pts.length < 2) continue;
+          const d = 'M' + it.pts.map(P).join('L') + (it.t === 'poly' ? 'Z' : '');
+          out.push(`<path d="${d}" fill="${it.t === 'poly' ? (it.fill || 'none') : 'none'}" fill-opacity="${it.fo ?? 0.14}" stroke="${it.stroke || ink}" stroke-width="${it.w || 1.6}" ${it.dash ? `stroke-dasharray="${it.dash}"` : ''} stroke-linejoin="round"/>`);
+        } else if (it.t === 'pt') {
+          const [x, y] = this.toScreen(it.p);
+          if (it.sym === 'tri') out.push(`<path d="M${x} ${y - 8}L${x + 7} ${y + 5}L${x - 7} ${y + 5}Z" fill="${it.fill || bg}" stroke="${it.stroke || ink}" stroke-width="1.6"/><circle cx="${x}" cy="${y}" r="1.6" fill="${it.stroke || ink}"/>`);
+          else out.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${it.r || 3.5}" fill="${it.fill || bg}" stroke="${it.stroke || ink}" stroke-width="1.5"/>`);
+          if (it.label) labels.push(`<text x="${(x + 7).toFixed(1)}" y="${(y - 7).toFixed(1)}" font-size="12" font-weight="600" fill="${it.lc || ink}" stroke="${bg}" stroke-width="3" paint-order="stroke" font-family="IBM Plex Sans, sans-serif">${esc(it.label)}</text>`);
+        } else if (it.t === 'text') {
+          const [x, y] = this.toScreen(it.p);
+          labels.push(`<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" font-size="${it.size || 13}" font-weight="${it.weight || 600}" fill="${it.color || ink}" stroke="${bg}" stroke-width="3.5" paint-order="stroke" font-family="IBM Plex Sans, sans-serif">${esc(it.text).split('\n').map((s, i) => `<tspan x="${x.toFixed(1)}" dy="${i ? '1.2em' : '0'}">${s}</tspan>`).join('')}</text>`);
+        } else if (it.t === 'seg' && S.labels) {
+          const [x1, y1] = this.toScreen(it.a), [x2, y2] = this.toScreen(it.b);
+          const len = Math.hypot(x2 - x1, y2 - y1);
+          if (len < it.text.length * 6.2 + 10) continue;
+          let ang = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI;
+          if (ang > 90) ang -= 180; if (ang < -90) ang += 180;
+          // offset outward from the lot centroid
+          const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+          let nx = -(y2 - y1) / len, ny = (x2 - x1) / len;
+          if (it.c) { const [cx, cy] = this.toScreen(it.c); if ((mx - cx) * nx + (my - cy) * ny < 0) { nx = -nx; ny = -ny; } }
+          const ox = mx + nx * 9, oy = my + ny * 9;
+          labels.push(`<text x="${ox.toFixed(1)}" y="${oy.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" font-size="11" fill="${it.color || muted}" stroke="${bg}" stroke-width="3" paint-order="stroke" font-family="IBM Plex Mono, monospace" transform="rotate(${ang.toFixed(1)} ${ox.toFixed(1)} ${oy.toFixed(1)})">${esc(it.text)}</text>`);
+        }
+      }
+      out.push(...labels);
+      // north arrow & scale bar
+      out.push(`<g transform="translate(22 22)"><path d="M0 -12L7 8L0 3L-7 8Z" fill="${ink}"/><text x="0" y="24" text-anchor="middle" font-size="12" font-weight="700" fill="${ink}" font-family="Barlow Condensed, sans-serif">N</text></g>`);
+      const sb = [1, 2, 5].flatMap(k => [k, k * 10, k * 100, k * 1000, k * 10000]).sort((a, b) => a - b).find(v => v * this.s >= 70) || 1;
+      const sbw = sb * this.s;
+      out.push(`<g transform="translate(14 ${H - 40})"><rect x="0" y="0" width="${sbw.toFixed(1)}" height="5" fill="${ink}"/><rect x="${(sbw / 2).toFixed(1)}" y="0" width="${(sbw / 2).toFixed(1)}" height="5" fill="${bg}" stroke="${ink}"/><text x="${sbw.toFixed(1)}" y="18" text-anchor="end" font-size="11" fill="${ink}" font-family="IBM Plex Mono, monospace">${sb >= 1000 ? sb / 1000 + ' km' : sb + ' m'}</text></g>`);
+      this.svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      this.svg.innerHTML = out.join('');
+    }
+    destroy() { this.ro.disconnect(); }
+  }
+
+  /* Scene builder for lots */
+  function lotScene(lots, opts = {}) {
+    const items = [];
+    lots.forEach(L => {
+      if (L.visible === false && !opts.includeHidden) return;
+      const c = opts.compFor ? opts.compFor(L) : comp(L);
+      if (!c.corners || c.corners.length < 2) return;
+      const col = L.color, active = L.id === (opts.activeId ?? S.lotId);
+      if (opts.ghost && c.unadjusted && L.adjust !== 'none' && c.closure.misclosure > 0.001) {
+        const u = c.unadjusted, last = G.step(u[u.length - 1], c.closure.rows[c.closure.rows.length - 1].az, c.closure.rows[c.closure.rows.length - 1].d);
+        items.push({ t: 'line', pts: [...u, last], stroke: col, w: 1, dash: '3 3' });
+      }
+      if (opts.showMisclosure && L.adjust === 'none' && c.unadjusted && c.closure.misclosure > 0.0005) {
+        const u = c.unadjusted, r = c.closure.rows, last = G.step(u[u.length - 1], r[r.length - 1].az, r[r.length - 1].d);
+        items.push({ t: 'line', pts: [u[u.length - 1], last], stroke: 'var(--bad)', w: 2 });
+      }
+      items.push({ t: 'poly', pts: c.corners, stroke: col, fill: col, w: active ? 2.4 : 1.5, fo: active ? 0.16 : 0.08 });
+      if (opts.tie !== false && c.tie && (L.tie.N !== '' && L.tie.E !== '')) {
+        items.push({ t: 'line', pts: [c.tie, c.corners[0]], stroke: col, w: 1.2, dash: '6 4', fit: false });
+        items.push({ t: 'pt', p: c.tie, sym: 'tri', stroke: col, label: L.tie.name ? L.tie.name.split(',')[0] : 'Tie', fit: false });
+        if (active && c.finalTie) items.push({ t: 'seg', a: c.tie, b: c.corners[0], text: G.fmtBearing(c.finalTie.az, 'dms', S.project.minutesOnly) + '  ' + c.finalTie.d.toFixed(2), color: col, fit: false });
+      }
+      if (active || opts.allLabels) c.corners.forEach((p, i) => {
+        const q = c.corners[(i + 1) % c.corners.length], v = G.inverse(p, q);
+        items.push({ t: 'seg', a: p, b: q, c: c.centroid, text: G.fmtBearing(v.az, 'dms', S.project.minutesOnly) + '  ' + v.d.toFixed(2) });
+      });
+      c.corners.forEach((p, i) => items.push({ t: 'pt', p, stroke: col, label: active || opts.allLabels ? String(i + 1) : '', r: active ? 3.8 : 3 }));
+      if (c.centroid && c.area) items.push({ t: 'text', p: c.centroid, text: L.name + '\n' + fx(c.area, 0) + ' sq.m', color: col, size: active ? 13 : 12 });
+    });
+    return items;
+  }
+
+  /* ---------------- views ---------------- */
+  let plotView = null, tileMap = null;
+  function teardown() {
+    if (plotView) { plotView.destroy(); plotView = null; }
+    if (tileMap) { tileMap.destroy(); tileMap = null; }
+  }
+  function render() {
+    teardown();
+    markNav();
+    const host = $('#view');
+    if (!S.project) return;
+    // fresh container each render so per-view listeners never pile up
+    const el = document.createElement('div');
+    host.replaceChildren(el);
+    const fn = VIEWS[S.view] || VIEWS.plot;
+    fn(el);
+  }
+  // re-render plot & summaries only (no form rebuild), used while typing
+  let refreshHook = null;
+  function refreshView() { if (refreshHook) refreshHook(); else render(); }
+  const header = (title, desc, extra = '') => `<div class="vh"><h1>${esc(title)}</h1><p>${esc(desc)}</p>${extra}</div>`;
+  const exampleBanner = () => S.isExample ? `<div class="callout info noprint" style="margin-bottom:12px">You're looking at an example project with made-up coordinates. <b>Save as project</b> keeps your edits, or open <button class="btn sm" data-nav="projects">Projects</button> to start your own.</div>` : '';
+  const lotChips = (withAdd = true, all = false) => `<div class="chips" role="group" aria-label="Lots">${S.project.lots.map(L =>
+    `<button class="chip" data-lot="${L.id}" aria-pressed="${L.id === lot().id}"><i style="background:${L.color}"></i>${esc(L.name)}</button>`).join('')}${withAdd ? `<button class="chip" data-addlot>${icon('plus', '')}<span>Lot</span></button>` : ''}</div>`;
+  function bindLotChips(el, after) {
+    el.addEventListener('click', e => {
+      const c = e.target.closest('[data-lot]');
+      if (c) { S.lotId = c.dataset.lot; after ? after() : render(); return; }
+      if (e.target.closest('[data-addlot]')) {
+        const L = newLot(S.project.lots.length + 1, S.project.lots.length);
+        const cur = lot(); if (cur) L.tie = clone(cur.tie);
+        S.project.lots.push(L); S.lotId = L.id; markDirty(); render();
+      }
+    });
+  }
+
+  /* ----- Start ----- */
+  const VIEWS = {};
+  VIEWS.home = el => {
+    refreshHook = null;
+    const comps = S.project.lots.map(comp);
+    el.innerHTML = header('Survey workbench', 'Plot technical descriptions, check closures, and produce returns and location plans for E.ROV jobs.') + exampleBanner() +
+      `<div class="panel" style="margin-bottom:14px"><h2>${esc(S.project.name)}</h2>
+        <div class="stats">
+          <div class="stat"><div class="k">Lots</div><div class="v">${S.project.lots.length}</div></div>
+          <div class="stat"><div class="k">Total area</div><div class="v">${fx(comps.reduce((s, c) => s + (c.area || 0), 0), 0)}</div><div class="s">sq.m</div></div>
+          <div class="stat"><div class="k">Grid</div><div class="v" style="font-size:14px">${esc(sys().label)}</div></div>
+          <div class="stat"><div class="k">Storage</div><div class="v" style="font-size:14px">${S.mode === 'shared' ? 'Shared with team' : 'This device'}</div></div>
+        </div></div>
+      <div class="tiles">${MODS.filter(m => m.id !== 'home').map(m => `<button class="tile" data-nav="${m.id}">${icon(m.id)}<b>${m.label}</b><span>${m.desc}</span></button>`).join('')}</div>`;
+  };
+
+  /* ----- Projects ----- */
+  VIEWS.projects = el => {
+    refreshHook = null;
+    const P = S.project;
+    const list = S.projects;
+    el.innerHTML = header('Projects', S.mode === 'shared' ? 'Projects are shared with everyone who has access to this app.' : 'Projects are kept in this browser. Export a file to move them to another device.') + exampleBanner() +
+      `<div class="work wide-left"><div class="stack">
+        <div class="panel"><h2>Current project</h2>
+          <div class="stack">
+            <label class="f"><span>Project name</span><input id="pName" value="${esc(P.name)}"></label>
+            <label class="f"><span>Location</span><input id="pLoc" value="${esc(P.location)}" placeholder="Barangay, municipality, province"></label>
+            <label class="f"><span>Grid coordinate system for tie points and corners</span><select id="pSys">${Object.entries(G.SYSTEMS).filter(([, s]) => s.kind === 'tm').map(([k, s]) => `<option value="${k}" ${k === P.sys ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select></label>
+            <div class="grid2">
+              <label class="f"><span>Allowable precision 1:</span><input id="pPrec" class="num" type="number" min="100" step="100" value="${P.minPrec}"></label>
+              <label class="f"><span>Bearings in write-ups</span><select id="pMin"><option value="1" ${P.minutesOnly ? 'selected' : ''}>Degrees & minutes</option><option value="0" ${!P.minutesOnly ? 'selected' : ''}>Degrees, minutes & seconds</option></select></label>
+            </div>
+            <div class="grid2">
+              <label class="f"><span>Geodetic engineer</span><input id="pSurv" value="${esc(P.surveyor)}"></label>
+              <label class="f"><span>PRC license no.</span><input id="pLic" value="${esc(P.license)}"></label>
+            </div>
+            <label class="f"><span>Company</span><input id="pCo" value="${esc(P.company)}"></label>
+            <div class="btns">
+              <button class="btn primary" data-action="save-project">${S.isExample ? 'Save as project' : 'Save now'}</button>
+              <button class="btn" id="pDup">Save a copy</button>
+              <button class="btn" id="pExp">${icon('download')}Export file</button>
+            </div>
+          </div></div>
+        <div class="panel"><h2>Start something new</h2><div class="btns">
+          <button class="btn primary" id="pNew">${icon('plus')}New project</button>
+          <button class="btn" id="pEx">Open the example</button>
+          <label class="btn">Import project file<input type="file" id="pImp" accept=".json,application/json" hidden></label>
+        </div></div>
+      </div>
+      <div class="panel"><h2>Saved projects</h2>${list.length ? `<div class="tblwrap"><table class="t"><thead><tr><th>Name</th><th class="n">Lots</th><th>Last saved</th><th></th></tr></thead><tbody>${list.map(r =>
+        `<tr><td><b>${esc(r.name)}</b>${r.id === P.id ? ' <span class="pill good">open</span>' : ''}</td><td class="n">${r.lots ?? (r.data?.lots?.length || '')}</td><td class="hint">${r.updated ? new Date(r.updated).toLocaleString() : ''}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-open="${r.id}">Open</button> <button class="btn sm ghost danger" data-del="${r.id}" aria-label="Delete ${esc(r.name)}">${icon('trash')}</button></td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="empty"><h3>No saved projects yet</h3><p>Press <b>Save as project</b> on the example, or start a new project. ${S.mode === 'shared' ? 'Saved projects appear here for the whole team.' : ''}</p></div>`}</div></div>`;
+    const set = (k, v) => { P[k] = v; markDirty(); };
+    $('#pName', el).oninput = e => { set('name', e.target.value); };
+    $('#pLoc', el).oninput = e => set('location', e.target.value);
+    $('#pSys', el).onchange = e => set('sys', e.target.value);
+    $('#pPrec', el).oninput = e => set('minPrec', Math.max(100, +e.target.value || 5000));
+    $('#pMin', el).onchange = e => set('minutesOnly', e.target.value === '1');
+    $('#pSurv', el).oninput = e => set('surveyor', e.target.value);
+    $('#pLic', el).oninput = e => set('license', e.target.value);
+    $('#pCo', el).oninput = e => set('company', e.target.value);
+    $('#pDup', el).onclick = () => { S.project.name = S.project.name + ' (copy)'; saveNow(true).then(render); };
+    $('#pExp', el).onclick = () => saveFile(safeName(P.name) + '.geoplot.json', JSON.stringify(P, null, 1));
+    $('#pNew', el).onclick = () => {
+      modal(`<h2>New project</h2><label class="f"><span>Project name</span><input id="nName" placeholder="e.g. Lot 345 Bucandala relocation"></label>
+        <label class="f" style="margin-top:8px"><span>Grid</span><select id="nSys">${Object.entries(G.SYSTEMS).filter(([, s]) => s.kind === 'tm').map(([k, s]) => `<option value="${k}" ${k === P.sys ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select></label>
+        <div class="btns" style="justify-content:flex-end;margin-top:14px"><button class="btn" data-close>Cancel</button><button class="btn primary" id="nOk">Create</button></div>`,
+        (m, close) => { $('#nOk', m).onclick = () => { const p = newProject($('#nName', m).value.trim() || 'Untitled project'); p.sys = $('#nSys', m).value; close(); openProject(p, false); saveNow(); go('plot'); }; });
+    };
+    $('#pEx', el).onclick = () => { openProject(exampleProject(), true); go('plot'); };
+    $('#pImp', el).onchange = e => {
+      const f = e.target.files[0]; if (!f) return;
+      f.text().then(t => { const p = JSON.parse(t); if (!p.lots) throw new Error('bad'); p.id = uid(); openProject(p, false); saveNow(); toast('Imported ' + p.name); })
+        .catch(() => toast('That file is not a GeoPlot project.'));
+    };
+    el.addEventListener('click', e => {
+      const o = e.target.closest('[data-open]'); const d = e.target.closest('[data-del]');
+      if (o) { const r = S.projects.find(x => x.id === o.dataset.open); if (r && r.data) { openProject(clone(r.data), false); go('plot'); } }
+      if (d) {
+        const r = S.projects.find(x => x.id === d.dataset.del);
+        confirmBox('Delete project?', `"${r?.name}" will be removed${S.mode === 'shared' ? ' for everyone' : ''}. This can't be undone.`, 'Delete', () =>
+          Store.deleteProject(d.dataset.del).then(() => { toast('Deleted'); if (d.dataset.del === S.project.id) { S.isExample = true; updateHeader(); } }).catch(() => toast('Could not delete. You may have view-only access.')));
+      }
+    });
+  };
+  const safeName = s => String(s || 'geoplot').replace(/[^\w.-]+/g, '_').slice(0, 60);
+
+  /* ----- Plot TD ----- */
+  VIEWS.plot = el => {
+    const L = lot();
+    const sysLbl = sys().label;
+    el.innerHTML = header('Plot technical description', 'Type or paste bearings and distances. The plot, closure and area update as you type.') + exampleBanner() +
+      `<div class="work"><div class="stack">
+        <div class="panel">${lotChips()}
+          <div class="sep"></div>
+          <div class="grid2"><label class="f"><span>Lot name</span><input id="lName" value="${esc(L.name)}"></label>
+          <label class="f"><span>Input</span><select id="lMode"><option value="td" ${L.mode !== 'coords' ? 'selected' : ''}>Bearings & distances</option><option value="coords" ${L.mode === 'coords' ? 'selected' : ''}>Corner coordinates</option></select></label></div>
+          <h3>Tie point <span class="hint" style="text-transform:none;letter-spacing:0">· ${esc(sysLbl)}</span></h3>
+          <label class="f"><span>Name</span><input id="tName" list="tieList" value="${esc(L.tie.name)}" placeholder="BLLM No. 1, Cad. 512-D"><datalist id="tieList">${tieOptions()}</datalist></label>
+          <div class="grid2" style="margin-top:6px"><label class="f"><span>Northing</span><input id="tN" class="num" inputmode="decimal" value="${esc(L.tie.N)}"></label>
+          <label class="f"><span>Easting</span><input id="tE" class="num" inputmode="decimal" value="${esc(L.tie.E)}"></label></div>
+          ${L.mode !== 'coords' ? `
+          <h3>Tie line · tie point to corner 1</h3>
+          <div class="grid2"><label class="f"><span>Bearing</span><input id="tlB" class="num" value="${esc(L.tieLine.b)}" placeholder="N 45 30 E"></label>
+          <label class="f"><span>Distance (m)</span><input id="tlD" class="num" inputmode="decimal" value="${esc(L.tieLine.d)}"></label></div>
+          <h3>Lines</h3>
+          <div class="tblwrap"><table class="t lines"><thead><tr><th>Line</th><th>Bearing</th><th>Distance</th><th></th></tr></thead><tbody>
+          ${L.lines.map((ln, i) => `<tr><td class="idx">${i + 1}–${i === L.lines.length - 1 ? 1 : i + 2}</td>
+            <td><input data-b="${i}" value="${esc(ln.b)}" placeholder="S 30 15 E" aria-label="Bearing line ${i + 1}"></td>
+            <td><input data-d="${i}" inputmode="decimal" value="${esc(ln.d)}" placeholder="0.00" aria-label="Distance line ${i + 1}"></td>
+            <td><button class="btn sm ghost" data-rm="${i}" aria-label="Remove line ${i + 1}">${icon('trash')}</button></td></tr>`).join('')}
+          </tbody></table></div>
+          <div class="btns" style="margin-top:8px"><button class="btn sm" id="addLine">${icon('plus')}Add line</button><button class="btn sm" data-nav="scan">${icon('scan')}Paste or scan a TD</button></div>
+          <p class="hint" style="margin:8px 0 0">Bearings: <span class="kbd">N 45 30 E</span> <span class="kbd">S30-15-20W</span> <span class="kbd">N. 10 deg. 05' W.</span> <span class="kbd">Due East</span>. The last line closes back to corner 1.</p>
+          <label class="f" style="margin-top:10px"><span>Closure adjustment</span><select id="lAdj">
+            <option value="none" ${L.adjust === 'none' ? 'selected' : ''}>None — plot as described</option>
+            <option value="compass" ${L.adjust === 'compass' ? 'selected' : ''}>Compass (Bowditch) rule</option>
+            <option value="transit" ${L.adjust === 'transit' ? 'selected' : ''}>Transit rule</option></select></label>`
+        : `<h3>Corners</h3><div class="tblwrap"><table class="t lines"><thead><tr><th>Cor.</th><th>Northing</th><th>Easting</th><th></th></tr></thead><tbody>
+          ${(L.corners.length ? L.corners : [{ N: '', E: '' }, { N: '', E: '' }, { N: '', E: '' }]).map((p, i) => `<tr><td class="idx">${i + 1}</td>
+          <td><input data-cn="${i}" inputmode="decimal" value="${esc(p.N)}"></td><td><input data-ce="${i}" inputmode="decimal" value="${esc(p.E)}"></td>
+          <td><button class="btn sm ghost" data-rmc="${i}" aria-label="Remove corner ${i + 1}">${icon('trash')}</button></td></tr>`).join('')}</tbody></table></div>
+          <div class="btns" style="margin-top:8px"><button class="btn sm" id="addCorner">${icon('plus')}Add corner</button><button class="btn sm" id="toTD">Convert to bearings & distances</button></div>`}
+          <div class="sep"></div>
+          <div class="btns"><button class="btn sm" id="dupLot">Duplicate lot</button><button class="btn sm ghost danger" id="delLot">${icon('trash')}Delete lot</button></div>
+        </div></div>
+        <div class="stack plotcol sticky-plot"><div id="plotHost"></div><div class="panel" id="sumPanel"></div></div></div>`;
+
+    plotView = new PlotView($('#plotHost', el), () => ({ items: lotScene(S.project.lots, { ghost: true, showMisclosure: true }) }));
+    const summary = () => {
+      const c = comp(lot());
+      const ha = (c.area || 0) / 10000;
+      const cl = c.closure || {};
+      $('#sumPanel', el).innerHTML = `<div class="stats">
+          <div class="stat"><div class="k">Area</div><div class="v">${fx(c.area, 2)}</div><div class="s">sq.m · ${fx(ha, 4)} ha</div></div>
+          <div class="stat"><div class="k">Perimeter</div><div class="v">${fx(c.perimeter, 2)}</div><div class="s">m</div></div>
+          <div class="stat"><div class="k">Misclosure</div><div class="v">${fx(cl.misclosure, 3)}</div><div class="s">m · ΣLat ${fx(cl.sumLat, 3)} · ΣDep ${fx(cl.sumDep, 3)}</div></div>
+          <div class="stat"><div class="k">Precision</div><div class="v">${precText(c)}</div><div class="s"><span class="pill ${precClass(c)}">${precClass(c) === 'good' ? 'within' : precClass(c) === 'muted' ? '—' : 'exceeds'} 1:${S.project.minPrec.toLocaleString('en-US')}</span></div></div>
+        </div>${c.errors.length ? `<div class="callout warn" style="margin-top:10px">${c.errors.map(esc).join('<br>')}</div>` : ''}
+        ${lot().adjust !== 'none' && cl.misclosure > 0.0005 ? `<p class="hint" style="margin:8px 0 0">Dashed outline: traverse as described. Solid: adjusted by ${lot().adjust === 'compass' ? 'compass' : 'transit'} rule.</p>` : (cl.misclosure > 0.0005 ? `<p class="hint" style="margin:8px 0 0">Red segment: the closing gap at corner 1.</p>` : '')}`;
+    };
+    summary();
+    const update = () => { plotView.draw(); summary(); markDirty(); };
+    refreshHook = () => { plotView.draw(); summary(); };
+    const val = s => $(s, el);
+    val('#lName').oninput = e => { lot().name = e.target.value; update(); };
+    val('#lMode').onchange = e => {
+      const L2 = lot();
+      if (e.target.value === 'coords' && L2.mode !== 'coords') { const c = comp(L2); L2.corners = (c.corners || []).map(p => ({ N: p.N.toFixed(3), E: p.E.toFixed(3) })); }
+      L2.mode = e.target.value; markDirty(); render();
+    };
+    val('#tName').oninput = e => {
+      const L2 = lot(); L2.tie.name = e.target.value;
+      const t = S.tiepoints.find(x => x.name === e.target.value);
+      if (t) { const g = tieInProjectSys(t); if (g) { L2.tie.N = g.N.toFixed(3); L2.tie.E = g.E.toFixed(3); val('#tN').value = L2.tie.N; val('#tE').value = L2.tie.E; toast('Tie point filled from your list'); plotView.fit(); } }
+      update();
+    };
+    val('#tN').oninput = e => { lot().tie.N = e.target.value.replace(/,/g, ''); update(); };
+    val('#tE').oninput = e => { lot().tie.E = e.target.value.replace(/,/g, ''); update(); };
+    const chkB = inp => inp.classList.toggle('bad', inp.value.trim() !== '' && G.parseBearing(inp.value) == null);
+    if (L.mode !== 'coords') {
+      val('#tlB').oninput = e => { lot().tieLine.b = e.target.value; chkB(e.target); update(); };
+      val('#tlD').oninput = e => { lot().tieLine.d = e.target.value; update(); };
+      $$('[data-b]', el).forEach(i => { chkB(i); i.oninput = e => { lot().lines[+e.target.dataset.b].b = e.target.value; chkB(e.target); update(); }; });
+      $$('[data-d]', el).forEach(i => { i.oninput = e => { lot().lines[+e.target.dataset.d].d = e.target.value; update(); }; });
+      // Enter moves to the next field
+      $$('[data-b],[data-d]', el).forEach(i => i.addEventListener('keydown', e => {
+        if (e.key !== 'Enter') return; e.preventDefault();
+        const all = $$('[data-b],[data-d]', el), k = all.indexOf(e.target);
+        if (k === all.length - 1) { lot().lines.push({ b: '', d: '' }); markDirty(); render(); setTimeout(() => { const f = $$('[data-b]', $('#view')).pop(); f && f.focus(); }, 0); }
+        else all[k + 1].focus();
+      }));
+      val('#addLine').onclick = () => { lot().lines.push({ b: '', d: '' }); markDirty(); render(); };
+      val('#lAdj').onchange = e => { lot().adjust = e.target.value; update(); };
+      el.addEventListener('click', e => { const r = e.target.closest('[data-rm]'); if (r) { lot().lines.splice(+r.dataset.rm, 1); markDirty(); render(); } });
+    } else {
+      const L2 = lot(); if (!L2.corners.length) L2.corners = [{ N: '', E: '' }, { N: '', E: '' }, { N: '', E: '' }];
+      $$('[data-cn]', el).forEach(i => i.oninput = e => { lot().corners[+e.target.dataset.cn].N = e.target.value.replace(/,/g, ''); update(); });
+      $$('[data-ce]', el).forEach(i => i.oninput = e => { lot().corners[+e.target.dataset.ce].E = e.target.value.replace(/,/g, ''); update(); });
+      val('#addCorner').onclick = () => { lot().corners.push({ N: '', E: '' }); markDirty(); render(); };
+      val('#toTD').onclick = () => {
+        const L3 = lot(), c = comp(L3);
+        if (!c.ok) { toast('Enter at least 3 complete corners first.'); return; }
+        const td = G.lotFromCorners(c.tie, c.corners, { minutesOnly: false });
+        Object.assign(L3, td, { mode: 'td' }); markDirty(); render();
+      };
+      el.addEventListener('click', e => { const r = e.target.closest('[data-rmc]'); if (r) { lot().corners.splice(+r.dataset.rmc, 1); markDirty(); render(); } });
+    }
+    val('#dupLot').onclick = () => { const c = clone(lot()); c.id = uid(); c.name += ' copy'; c.color = LOT_COLORS[S.project.lots.length % LOT_COLORS.length]; S.project.lots.push(c); S.lotId = c.id; markDirty(); render(); };
+    val('#delLot').onclick = () => {
+      if (S.project.lots.length === 1) { toast('A project needs at least one lot.'); return; }
+      confirmBox('Delete lot?', `${lot().name} will be removed from this project.`, 'Delete', () => { S.project.lots = S.project.lots.filter(x => x.id !== lot().id); S.lotId = S.project.lots[0].id; markDirty(); render(); });
+    };
+    bindLotChips(el);
+  };
+
+  function tieInProjectSys(t) {
+    const from = t.sys || S.project.sys;
+    try {
+      if (G.SYSTEMS[from].kind === 'geo') return G.convert({ lat: +t.lat, lon: +t.lon }, from, S.project.sys);
+      if (!isFinite(+t.N) || !isFinite(+t.E)) return null;
+      return from === S.project.sys ? { N: +t.N, E: +t.E } : G.convert({ N: +t.N, E: +t.E }, from, S.project.sys);
+    } catch (e) { return null; }
+  }
+
+  /* ----- Scan to plot ----- */
+  // On-device OCR: Tesseract.js, loaded from the CDN the first time it is used, then cached by the
+  // service worker (installed app) and its own IndexedDB cache, so later scans work offline.
+  const TESS_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+  let tessLoadP = null, tessWorkerP = null, tessProgress = null;
+  function loadTesseract() {
+    if (window.Tesseract) return Promise.resolve();
+    if (tessLoadP) return tessLoadP;
+    tessLoadP = new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = TESS_URL; s.async = true;
+      s.onload = () => window.Tesseract ? res() : rej(new Error('no_tesseract'));
+      s.onerror = () => { tessLoadP = null; s.remove(); rej(new Error('load_failed')); };
+      document.head.appendChild(s);
+    });
+    return tessLoadP;
+  }
+  function withTimeout(p, ms, code) {
+    let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(code)), ms); })]).finally(() => clearTimeout(t));
+  }
+  async function tessWorker() {
+    await withTimeout(loadTesseract(), 45000, 'load_timeout');
+    if (!tessWorkerP) {
+      tessWorkerP = withTimeout(window.Tesseract.createWorker('eng', 1, { logger: m => tessProgress && tessProgress(m) }), 180000, 'init_timeout')
+        .catch(e => { tessWorkerP = null; throw e; });
+    }
+    return tessWorkerP;
+  }
+  async function ocrOnDevice(canvas, table, onProgress) {
+    tessProgress = onProgress;
+    const w = await tessWorker();
+    await w.setParameters({ tessedit_pageseg_mode: table ? '6' : '3', preserve_interword_spaces: '1' });
+    const { data } = await w.recognize(canvas);
+    tessProgress = null;
+    return { text: data.text || '', conf: data.confidence, words: (data.words || []).map(x => ({ text: x.text, conf: x.confidence })) };
+  }
+
+  // Claude API (installed app only): the viewer's own key, kept on this device
+  const API_MODELS = [['claude-sonnet-5-5', 'Claude Sonnet 5.5 (recommended)'], ['claude-haiku-4-5-20251001', 'Claude Haiku 4.5 (cheaper, less careful)'], ['claude-opus-5-5', 'Claude Opus 5.5 (most careful, costs more)']];
+  const apiCfg = () => lsGet('geoplot.api', { key: '', model: API_MODELS[0][0] });
+  function looseJSON(text) {
+    try { return JSON.parse(text); } catch (e) { /* fall through */ }
+    const f = /```(?:json)?\s*([\s\S]*?)```/.exec(text); if (f) { try { return JSON.parse(f[1]); } catch (e) { /* fall through */ } }
+    const a = text.indexOf('{'), b = text.lastIndexOf('}');
+    if (a >= 0 && b > a) { try { return JSON.parse(text.slice(a, b + 1)); } catch (e) { /* fall through */ } }
+    const err = new Error('invalid_json'); err.code = 'invalid_json'; throw err;
+  }
+  async function readWithApi(blob, prompt, signal) {
+    const cfg = apiCfg();
+    const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); });
+    let resp;
+    try {
+      resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST', signal,
+        headers: { 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true', 'content-type': 'application/json' },
+        body: JSON.stringify({ model: cfg.model, max_tokens: 4000, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: blob.type || 'image/jpeg', data: b64 } }, { type: 'text', text: prompt }] }] })
+      });
+    } catch (e) { const err = new Error('network'); err.code = e.name === 'AbortError' ? 'cancelled' : 'network'; throw err; }
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}));
+      const err = new Error('api'); err.code = 'api_' + resp.status; err.detail = j?.error?.message || ''; throw err;
+    }
+    const j = await resp.json();
+    return looseJSON((j.content || []).filter(c => c.type === 'text').map(c => c.text).join(''));
+  }
+
+  // image helpers
+  function loadImageFile(file) {
+    return new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = () => rej(new Error('bad_image')); img.src = URL.createObjectURL(file); });
+  }
+  function rotatedCanvas(img, rot, maxSide) {
+    const s = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.round(img.naturalWidth * s), h = Math.round(img.naturalHeight * s);
+    const swap = rot % 180 !== 0;
+    const cv = document.createElement('canvas'); cv.width = swap ? h : w; cv.height = swap ? w : h;
+    const ctx = cv.getContext('2d');
+    ctx.translate(cv.width / 2, cv.height / 2); ctx.rotate(rot * Math.PI / 180); ctx.drawImage(img, -w / 2, -h / 2, w, h);
+    return cv;
+  }
+  // crop is stored as fractions of the rotated image {x,y,w,h} in 0..1
+  function croppedCanvas(img, rot, crop, maxSide, targetLong) {
+    const base = rotatedCanvas(img, rot, maxSide);
+    const c = crop || { x: 0, y: 0, w: 1, h: 1 };
+    const sx = Math.round(c.x * base.width), sy = Math.round(c.y * base.height), sw = Math.max(1, Math.round(c.w * base.width)), sh = Math.max(1, Math.round(c.h * base.height));
+    const k = targetLong ? Math.min(2.5, targetLong / Math.max(sw, sh)) : 1;
+    const out = document.createElement('canvas'); out.width = Math.round(sw * k); out.height = Math.round(sh * k);
+    const ctx = out.getContext('2d'); ctx.imageSmoothingQuality = 'high';
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, out.width, out.height);
+    ctx.drawImage(base, sx, sy, sw, sh, 0, 0, out.width, out.height);
+    return out;
+  }
+  // grayscale + contrast stretch (2nd–98th percentile): helps OCR on faded or yellowed titles
+  function enhanceForOCR(cv) {
+    const ctx = cv.getContext('2d'), id = ctx.getImageData(0, 0, cv.width, cv.height), d = id.data;
+    const hist = new Uint32Array(256), n = d.length / 4;
+    for (let i = 0; i < d.length; i += 4) { const g = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000 | 0; d[i] = g; hist[g]++; }
+    let lo = 0, hi = 255, acc = 0;
+    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc > n * 0.02) { lo = v; break; } }
+    acc = 0; for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc > n * 0.02) { hi = v; break; } }
+    const span = Math.max(1, hi - lo);
+    for (let i = 0; i < d.length; i += 4) { const g = Math.max(0, Math.min(255, (d[i] - lo) * 255 / span)); d[i] = d[i + 1] = d[i + 2] = g; }
+    ctx.putImageData(id, 0, 0);
+    return cv;
+  }
+  const canvasBlob = (cv, type, q) => new Promise(res => cv.toBlob(res, type, q));
+
+  VIEWS.scan = el => {
+    refreshHook = null;
+    const sc = S.scan = S.scan || { engine: null, table: false, rot: 0, crop: null, img: null, name: '' };
+    const viaClaudeAi = () => !!(S.caps.sample && S.caps.sampleImages);
+    const hasApi = () => !S.inFrame && !!apiCfg().key;
+    const pickDefault = () => viaClaudeAi() ? 'claude' : hasApi() ? 'api' : 'device';
+    el.innerHTML = header('Scan to plot', 'Photograph a title, plan or technical description, or paste its text. Every line is shown for checking before it goes on the plot.') + exampleBanner() +
+      `<div class="work wide-left"><div class="stack">
+        <div class="panel" id="scPhoto"><h2>Photo</h2>
+          <div class="btns">
+            <label class="btn primary">${icon('scan')}Take photo<input type="file" id="scCam" accept="image/*" capture="environment" hidden></label>
+            <label class="btn">Choose from gallery<input type="file" id="scGal" accept="image/*" hidden></label>
+          </div>
+          <div id="scEditor" ${sc.img ? '' : 'hidden'} style="margin-top:10px">
+            <p class="hint" style="margin:0 0 6px">Drag across the photo to select only the technical description or lot data table. A tight crop reads much better.</p>
+            <div style="position:relative;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--sunk);touch-action:none"><canvas id="scCv" style="display:block;width:100%;cursor:crosshair"></canvas></div>
+            <div class="btns" style="margin-top:6px">
+              <button class="btn sm" id="scRotL" aria-label="Rotate left">⟲ Rotate</button><button class="btn sm" id="scRotR" aria-label="Rotate right">Rotate ⟳</button>
+              <button class="btn sm ghost" id="scCropX">Use whole photo</button>
+            </div>
+            <h3>Read with</h3>
+            <div class="chips" role="radiogroup" aria-label="Reading engine" id="scEng"></div>
+            <p class="hint" id="scEngNote" style="margin:6px 0 0"></p>
+            <label class="hint" style="display:flex;gap:6px;align-items:center;margin-top:8px"><input type="checkbox" id="scTable" ${sc.table ? 'checked' : ''}> The crop is a table (lot data / coordinate table)</label>
+            <div class="btns" style="margin-top:10px"><button class="btn primary" id="scGo">Read photo</button><button class="btn" id="scStop" hidden>Stop</button></div>
+            <div id="scProg" style="margin-top:8px" hidden><div style="height:6px;background:var(--sunk);border-radius:3px;overflow:hidden"><div id="scBar" style="height:100%;width:0;background:var(--accent);transition:width .2s"></div></div><p class="hint" id="scProgT" style="margin:4px 0 0"></p></div>
+          </div>
+        </div>
+        <div class="panel"><h2>Text</h2>
+          <p class="hint" style="margin-top:0">Text read from a photo lands here. Correct any wrong digit and press <b>Read text</b> again.</p>
+          <textarea id="scText" rows="10" placeholder='Beginning at a point marked "1" on plan, being N. 45 deg. 30&#39; E., 1,234.56 m. from BLLM No. 1, Cad. 512-D; thence S. 30 deg. 15&#39; E., 25.00 m. to point 2; ...'>${esc(S.scanText || '')}</textarea>
+          <div class="row" style="margin-top:8px">
+            <label class="hint" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="scTie" ${S.scanFirstTie ? 'checked' : ''}> First line is the tie line</label>
+            <label class="hint" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="scSwap"> Coordinates are E, N</label>
+          </div>
+          <div class="btns" style="margin-top:8px"><button class="btn primary" id="scRead">Read text</button><button class="btn" id="scAiText" hidden>${icon('sparkle')}Read with Claude</button><button class="btn ghost" id="scSample">Load a sample</button></div>
+        </div>
+        ${!S.inFrame ? `<div class="panel"><h2>Claude API key</h2><p class="hint" style="margin-top:0" id="scApiState"></p><div class="btns"><button class="btn sm" id="scApiSet">Set up API key</button></div></div>` : ''}
+      </div>
+      <div class="stack"><div class="panel" id="scOut"><div class="empty"><h3>Nothing read yet</h3><p>The tie line and lines appear here with closure and area checks before they go on the plot.</p></div></div></div></div>`;
+
+    /* ---- results ---- */
+    const showResult = (lots, opts = {}) => {
+      S.scanResult = lots;
+      const out = $('#scOut', el);
+      if (!lots.length || lots.every(l => !l.lines.length && !l.corners.length)) {
+        out.innerHTML = `<div class="callout warn">No bearings and distances or coordinates were found. Check the text, or tick "First line is the tie line" for tabulated data without a TP row.</div>${opts.lowConf ? lowConfHTML(opts.lowConf) : ''}`; return;
+      }
+      out.innerHTML = `<h2>Review before plotting</h2>` + lots.map((r, k) => {
+        const tmp = { tie: { N: 0, E: 0 }, tieLine: r.tieLine || { b: '', d: '' }, lines: r.lines, mode: r.corners.length >= 3 && !r.lines.length ? 'coords' : 'td', corners: r.corners };
+        const c = G.computeLot(tmp);
+        const checkText = lots.length === 1 && opts.text ? opts.text : (r.area ? `(${r.area}) SQUARE METERS` : '');
+        const checks = G.tdChecks(checkText, { kind: tmp.mode === 'coords' ? 'coords' : 'bearings', lines: r.lines }, c);
+        return `<div style="margin-bottom:14px"><h3>${esc(r.name || 'Lot ' + (k + 1))}${r.tieName ? ' · tie: ' + esc(r.tieName) : ''}</h3>
+          <div class="tblwrap"><table class="t"><thead><tr><th>Line</th><th>Bearing</th><th class="n">Distance</th></tr></thead><tbody>
+          ${r.tieLine ? `<tr><td>TP–1</td><td class="mono">${esc(r.tieLine.b)}</td><td class="n">${esc(r.tieLine.d)}</td></tr>` : ''}
+          ${r.lines.map((l, i) => `<tr><td>${i + 1}–${i === r.lines.length - 1 ? 1 : i + 2}</td><td class="mono">${esc(l.b)}</td><td class="n">${esc(l.d)}</td></tr>`).join('')}
+          ${r.corners.map((p, i) => `<tr><td>${esc(p.name || i + 1)}</td><td class="mono">N ${fx(p.N, 3)}</td><td class="n">E ${fx(p.E, 3)}</td></tr>`).join('')}
+          </tbody></table></div>
+          <div class="stats" style="margin-top:8px">
+            ${c.area ? `<div class="stat"><div class="k">Area</div><div class="v">${fx(c.area, 2)}</div><div class="s">sq.m</div></div>` : ''}
+            ${tmp.mode === 'td' && c.closure ? `<div class="stat"><div class="k">Misclosure</div><div class="v">${fx(c.closure.misclosure, 3)}</div><div class="s"><span class="pill ${precClass(c)}">${precText(c)}</span></div></div>` : ''}
+          </div>
+          ${checks.map(w => `<div class="callout ${w.level === 'warn' ? 'warn' : 'info'}" style="margin-top:6px">${esc(w.text)}</div>`).join('')}</div>`;
+      }).join('') + (opts.lowConf ? lowConfHTML(opts.lowConf) : '') +
+        `<div class="btns"><button class="btn primary" id="scNew">Plot as new ${lots.length > 1 ? 'lots' : 'lot'}</button><button class="btn" id="scRep" ${lots.length > 1 ? 'hidden' : ''}>Replace ${esc(lot().name)}</button></div>`;
+      const apply = replace => {
+        lots.forEach(r => {
+          const L = replace ? lot() : newLot(S.project.lots.length + 1, S.project.lots.length);
+          if (r.name) L.name = r.name;
+          if (r.tieName) {
+            L.tie.name = r.tieName;
+            const t = S.tiepoints.find(x => x.name.toLowerCase() === r.tieName.toLowerCase());
+            const g = t && tieInProjectSys(t); if (g) { L.tie.N = g.N.toFixed(3); L.tie.E = g.E.toFixed(3); }
+          } else if (!replace && lot()) L.tie = clone(lot().tie);
+          if (r.lines.length) { L.mode = 'td'; L.lines = r.lines; L.tieLine = r.tieLine || { b: '', d: '' }; }
+          else if (r.corners.length) { L.mode = 'coords'; L.corners = r.corners.map(p => ({ N: String(p.N), E: String(p.E) })); }
+          if (!replace) S.project.lots.push(L);
+          S.lotId = L.id;
+        });
+        markDirty(); go('plot');
+        if (!lot().tie.N) toast('Plotted. Enter the tie point coordinates to place the lot on the grid.', 4500);
+      };
+      $('#scNew', out).onclick = () => apply(false);
+      $('#scRep', out).onclick = () => apply(true);
+    };
+    const lowConfHTML = words => words.length ? `<div class="callout warn" style="margin:6px 0 12px"><b>Check these against the document.</b> The reader was unsure of: ${words.map(w => `<span class="kbd">${esc(w)}</span>`).join(' ')}</div>` : '';
+
+    const txt = $('#scText', el);
+    const readText = (opts = {}) => {
+      const raw = txt.value;
+      const r = G.parseTDText(raw, { firstIsTie: $('#scTie', el).checked, swapNE: $('#scSwap', el).checked });
+      showResult([{ name: '', tieName: r.tieName, tieLine: r.tieLine, lines: r.lines, corners: r.kind === 'coords' ? r.corners : [] }], { text: raw, lowConf: opts.lowConf });
+    };
+    txt.oninput = () => { S.scanText = txt.value; };
+    $('#scTie', el).onchange = e => { S.scanFirstTie = e.target.checked; };
+    $('#scRead', el).onclick = () => readText();
+    $('#scSample', el).onclick = () => {
+      txt.value = S.scanText = `Lot 5, Psd-04-087654 (sample)\nBeginning at a point marked "1" on plan, being S. 62 deg. 18' W., 845.27 m. from BLLM No. 4, Cad. 512-D;\nthence N. 21 deg. 40' W., 18.50 m. to point 2;\nthence N. 68 deg. 05' E., 30.12 m. to point 3;\nthence S. 22 deg. 10' E., 18.47 m. to point 4;\nthence S. 68 deg. 02' W., 30.28 m. to the point of beginning; containing an area of FIVE HUNDRED FIFTY-NINE (559) SQUARE METERS, more or less.`;
+    };
+
+    /* ---- Claude reading (claude.ai sample or API key) ---- */
+    const aiPrompt = (extra) => `You are reading a Philippine land survey document (technical description, lot plan, survey plan or land title). Extract the survey data so it can be plotted.
+Reply with only JSON in exactly this shape:
+{"lots":[{"name":"Lot 123","tie_point":"BLLM No. 1, Cad. 512-D","tie_line":{"bearing":"N 45 30 00 E","distance":123.45},"lines":[{"from":"1","to":"2","bearing":"S 30 15 00 E","distance":25.0}],"corners":[{"name":"1","northing":1623456.78,"easting":495123.45}],"area_sqm":500}]}
+Rules: bearings as quadrant bearings "N dd mm ss E"; distances in metres as numbers; keep the lines in the order written, the last one returning to point 1; tie_line is the line from the tie point to corner 1 (null if none); fill corners only when the document has a coordinate table; use null for anything unreadable and never guess digits.${extra || ''}`;
+    const normB = b => { const az = G.parseBearing(b); return az == null ? String(b) : G.fmtBearing(az, 'plain'); };
+    const fromAI = data => {
+      const lots = (data && Array.isArray(data.lots) ? data.lots : []).map(l => ({
+        name: l.name || '', tieName: l.tie_point || '',
+        tieLine: l.tie_line && l.tie_line.bearing && l.tie_line.distance != null ? { b: normB(l.tie_line.bearing), d: String(l.tie_line.distance) } : null,
+        lines: (l.lines || []).filter(x => x && x.bearing && x.distance != null).map(x => ({ b: normB(x.bearing), d: String(x.distance) })),
+        corners: (l.lines || []).length ? [] : (l.corners || []).filter(p => p && isFinite(p.northing) && isFinite(p.easting)).map(p => ({ name: p.name, N: +p.northing, E: +p.easting })),
+        area: l.area_sqm
+      }));
+      showResult(lots);
+    };
+    const aiErr = e => {
+      const c = e && e.code;
+      return c === 'not_granted' || c === 'sampling_disabled' ? 'Reading with Claude was not allowed for this page.' :
+        c === 'rate_limited' || c === 'api_429' ? 'Too many requests or the usage limit was reached. Try again later.' :
+          c === 'image_rejected' ? 'That photo could not be used. Try a JPEG or PNG under 20 MB.' :
+            c === 'invalid_json' ? 'The answer could not be read as survey data. Try again, or crop tighter to the TD.' :
+              c === 'refused' ? 'Claude declined to read this one.' :
+                c === 'api_401' || c === 'api_403' ? 'The API key was not accepted. Check it under Claude API key.' :
+                  c === 'api_400' ? 'The request was rejected: ' + (e.detail || 'check the photo and settings.') :
+                    c === 'api_529' || c === 'api_503' || c === 'api_500' ? 'Claude is busy right now. Try again in a minute.' :
+                      c === 'network' ? 'No internet connection. Use "On this phone" to read offline.' : 'Reading failed. Try again.';
+    };
+
+    /* ---- photo editor ---- */
+    const cv = $('#scCv', el);
+    let disp = null; // displayed rotated preview
+    const drawEditor = () => {
+      if (!sc.img || !cv) return;
+      disp = rotatedCanvas(sc.img, sc.rot, 1400);
+      const boxW = cv.parentElement.clientWidth || 360;
+      const maxH = Math.min(window.innerHeight * 0.55, 460);
+      const scale = Math.min(boxW / disp.width, maxH / disp.height);
+      const W = Math.round(disp.width * scale), H = Math.round(disp.height * scale);
+      const dpr = window.devicePixelRatio || 1;
+      cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px'; cv.style.margin = '0 auto';
+      const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.drawImage(disp, 0, 0, W, H);
+      const c = sc.crop;
+      if (c) {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.rect(c.x * W, c.y * H, c.w * W, c.h * H); ctx.fill('evenodd');
+        ctx.strokeStyle = '#ff7b3a'; ctx.lineWidth = 2; ctx.strokeRect(c.x * W, c.y * H, c.w * W, c.h * H);
+      }
+    };
+    if (cv) {
+      let start = null;
+      const rel = e => { const r = cv.getBoundingClientRect(); return { x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) }; };
+      cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); start = rel(e); });
+      cv.addEventListener('pointermove', e => {
+        if (!start) return; const p = rel(e);
+        sc.crop = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), w: Math.abs(p.x - start.x), h: Math.abs(p.y - start.y) }; drawEditor();
+      });
+      const end = () => { if (sc.crop && (sc.crop.w < 0.03 || sc.crop.h < 0.02)) sc.crop = null; start = null; drawEditor(); };
+      cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+      new ResizeObserver(() => drawEditor()).observe(cv.parentElement);
+    }
+    const takeFile = async f => {
+      if (!f) return;
+      try { sc.img = await loadImageFile(f); sc.rot = 0; sc.crop = null; sc.name = f.name; $('#scEditor', el).hidden = false; drawEditor(); setEngines(); }
+      catch (e) { toast('That file could not be opened as a photo.'); }
+    };
+    $('#scCam', el).onchange = e => { takeFile(e.target.files[0]); e.target.value = ''; };
+    $('#scGal', el).onchange = e => { takeFile(e.target.files[0]); e.target.value = ''; };
+    const rotCrop = (c, dir) => !c ? null : dir > 0 ? { x: 1 - c.y - c.h, y: c.x, w: c.h, h: c.w } : { x: c.y, y: 1 - c.x - c.w, w: c.h, h: c.w };
+    $('#scRotL', el).onclick = () => { sc.rot = (sc.rot + 270) % 360; sc.crop = rotCrop(sc.crop, -1); drawEditor(); };
+    $('#scRotR', el).onclick = () => { sc.rot = (sc.rot + 90) % 360; sc.crop = rotCrop(sc.crop, 1); drawEditor(); };
+    $('#scCropX', el).onclick = () => { sc.crop = null; drawEditor(); };
+    $('#scTable', el).onchange = e => { sc.table = e.target.checked; };
+
+    /* ---- engine choice ---- */
+    const ENG = {
+      device: { label: 'On this phone · free', note: () => S.inFrame ? 'Reads the text on your device. It may not load inside claude.ai; the installed app always supports it.' : 'Reads the text on your phone. The first use downloads the reader (about 15 MB); after that it works offline. Typed documents read well; faded or handwritten ones need more checking.' },
+      claude: { label: 'Claude', note: () => 'Most accurate, especially on old or faded titles. Uses your Claude account.' },
+      api: { label: 'Claude · API key', note: () => hasApi() ? 'Most accurate. Sends the cropped photo to Claude using the API key on this phone; each scan is billed to that key (a few US cents).' : 'Set up an API key below to use Claude in the installed app.' }
+    };
+    function setEngines() {
+      const box = $('#scEng', el); if (!box) return;
+      const avail = ['device'].concat(viaClaudeAi() ? ['claude'] : []).concat(!S.inFrame ? ['api'] : []);
+      if (!sc.engine || !avail.includes(sc.engine) || (sc.engine === 'api' && !hasApi())) sc.engine = pickDefault();
+      box.innerHTML = avail.map(k => `<button class="chip" role="radio" aria-checked="${sc.engine === k}" aria-pressed="${sc.engine === k}" data-eng="${k}">${esc(ENG[k].label)}</button>`).join('');
+      $('#scEngNote', el).textContent = ENG[sc.engine].note();
+    }
+    $('#scEng', el)?.addEventListener('click', e => {
+      const b = e.target.closest('[data-eng]'); if (!b) return;
+      if (b.dataset.eng === 'api' && !hasApi()) { apiModal(); return; }
+      sc.engine = b.dataset.eng; setEngines();
+    });
+
+    /* ---- API key settings ---- */
+    const apiState = () => { const s = $('#scApiState', el); if (!s) return; const c = apiCfg(); s.textContent = c.key ? `Set on this device (…${c.key.slice(-4)}) · ${API_MODELS.find(m => m[0] === c.model)?.[1] || c.model}.` : 'Optional. With your own Anthropic API key, the installed app can read photos with Claude instead of the free on-phone reader.'; };
+    function apiModal() {
+      const c = apiCfg();
+      modal(`<h2>Claude API key</h2>
+        <p class="hint">Create a key at console.anthropic.com. It is stored only on this device and sent only to Anthropic. Anyone who uses this phone can scan with it, so set a monthly spend limit in the console.</p>
+        <label class="f"><span>API key</span><input id="akKey" type="password" autocomplete="off" value="${esc(c.key)}" placeholder="sk-ant-…"></label>
+        <label class="f" style="margin-top:8px"><span>Model</span><select id="akModel">${API_MODELS.map(([v, l]) => `<option value="${v}" ${v === c.model ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+        <div class="btns" style="justify-content:flex-end;margin-top:14px">${c.key ? '<button class="btn danger" id="akDel">Remove key</button>' : ''}<button class="btn" data-close>Cancel</button><button class="btn primary" id="akSave">Save</button></div>`,
+        (m, close) => {
+          $('#akSave', m).onclick = () => {
+            const key = $('#akKey', m).value.trim();
+            if (key && !/^sk-ant-/.test(key)) { toast('That does not look like an Anthropic API key (it starts with sk-ant-).'); return; }
+            lsSet('geoplot.api', { key, model: $('#akModel', m).value }); close();
+            if (key) sc.engine = 'api'; setEngines(); apiState(); toast(key ? 'API key saved on this device' : 'API key removed');
+          };
+          const d = $('#akDel', m); if (d) d.onclick = () => { lsSet('geoplot.api', { key: '', model: c.model }); close(); sc.engine = null; setEngines(); apiState(); toast('API key removed'); };
+        });
+    }
+    const apiBtn = $('#scApiSet', el); if (apiBtn) apiBtn.onclick = apiModal;
+    apiState();
+
+    /* ---- read the photo ---- */
+    let ctl = null;
+    const prog = (pct, text) => { $('#scProg', el).hidden = false; $('#scBar', el).style.width = Math.round(pct * 100) + '%'; $('#scProgT', el).textContent = text; };
+    const busy = on => { $('#scGo', el).disabled = on; $('#scStop', el).hidden = !on; };
+    $('#scStop', el).onclick = () => { if (ctl) ctl.abort(); };
+    $('#scGo', el).onclick = async () => {
+      if (!sc.img) { toast('Take or choose a photo first.'); return; }
+      busy(true);
+      ctl = new AbortController();
+      const myCtl = ctl;
+      try {
+        if (sc.engine === 'device') {
+          prog(0.02, 'Preparing the photo…');
+          const cvs = enhanceForOCR(croppedCanvas(sc.img, sc.rot, sc.crop, 3600, 2400));
+          const STAGES = { 'loading tesseract core': ['Downloading the reader (first time only)…', 0.05, 0.2], 'initializing tesseract': ['Starting the reader…', 0.2, 0.25], 'loading language traineddata': ['Downloading English text model (first time only)…', 0.25, 0.45], 'initializing api': ['Starting the reader…', 0.45, 0.5], 'recognizing text': ['Reading the text…', 0.5, 1] };
+          const res = await new Promise((resolve, reject) => {
+            myCtl.signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { code: 'cancelled' })));
+            ocrOnDevice(cvs, sc.table, m => { const s = STAGES[m.status]; if (s && !myCtl.signal.aborted) prog(s[1] + (s[2] - s[1]) * (m.progress || 0), s[0]); }).then(resolve, reject);
+          });
+          const cleaned = G.cleanOCR(res.text);
+          txt.value = S.scanText = cleaned;
+          const low = [...new Set(res.words.filter(w => w.conf < 65 && /\d/.test(w.text)).map(w => w.text.trim()).filter(Boolean))].slice(0, 14);
+          prog(1, `Done · reader confidence ${Math.round(res.conf || 0)}%. Check the result on the right; fix digits in the Text box if needed.`);
+          readText({ lowConf: low });
+          if (!cleaned.trim()) toast('No text found. Crop tighter, rotate the photo upright, or retake it in better light.', 5000);
+        } else {
+          prog(0.15, 'Sending the cropped photo to Claude… this can take up to a minute.');
+          const out = croppedCanvas(sc.img, sc.rot, sc.crop, 4000, 1568);
+          const blob = await canvasBlob(out, 'image/jpeg', 0.9);
+          const data = sc.engine === 'claude'
+            ? await S.caps.sample.json(aiPrompt(), { images: blob, modelTier: 'default', signal: myCtl.signal })
+            : await readWithApi(blob, aiPrompt(), myCtl.signal);
+          prog(1, 'Done. Check every line on the right before plotting.');
+          fromAI(data);
+        }
+      } catch (e) {
+        const code = e && (e.code || e.message);
+        if (code === 'cancelled') prog(0, 'Stopped.');
+        else if (sc.engine === 'device') {
+          prog(0, code === 'load_failed' || code === 'load_timeout' || code === 'init_timeout' || /fetch|network|Failed/i.test(String(e && e.message))
+            ? (S.inFrame ? 'The on-phone reader cannot load inside claude.ai. Choose Claude above, or use the installed app.' : 'The reader could not be downloaded. Connect to the internet once so it can be saved for offline use.')
+            : 'Reading failed. Rotate the photo upright, crop tighter and try again.');
+        } else prog(0, aiErr(e));
+      }
+      busy(false); ctl = null;
+    };
+
+    capsReady.then(async () => {
+      const sample = S.caps.sample;
+      if (sample) {
+        const ab = $('#scAiText', el);
+        if (ab) {
+          ab.hidden = false;
+          ab.onclick = async () => {
+            if (!txt.value.trim()) { toast('Paste some text first.'); return; }
+            ab.disabled = true; ab.textContent = 'Reading…';
+            try { fromAI(await sample.json(aiPrompt('\n\nDocument text:\n' + txt.value.slice(0, 20000)), { modelTier: 'default' })); }
+            catch (e) { if (e?.code !== 'cancelled') toast(aiErr(e), 4500); }
+            ab.disabled = false; ab.innerHTML = icon('sparkle') + 'Read with Claude';
+          };
+        }
+        if (S.caps.sampleImages === undefined) {
+          const lim = await sample.limits().catch(() => null);
+          S.caps.sampleImages = !!(lim && lim.images);
+        }
+      }
+      setEngines();
+    });
+    if (sc.img) { drawEditor(); }
+    setEngines();
+  };
+
+  /* ----- Satellite / map ----- */
+  class TileMap {
+    constructor(host, overlayFn) {
+      this.host = host; this.overlayFn = overlayFn;
+      host.classList.add('plot');
+      host.innerHTML = `<canvas></canvas><div class="tools noprint">
+          <button class="btn" data-z="fit" aria-label="Fit to lots" title="Fit to lots">${icon('fit')}</button>
+          <button class="btn" data-z="in" aria-label="Zoom in">${icon('plus')}</button>
+          <button class="btn" data-z="out" aria-label="Zoom out">${icon('minus')}</button></div>
+        <div class="legend" id="attr"></div><div class="coord"></div>`;
+      this.cv = $('canvas', host); this.ctx = this.cv.getContext('2d'); this.coord = $('.coord', host);
+      this.z = 17; this.c = { lat: 14.4, lon: 121 }; this.layer = 'sat';
+      this.cache = new Map(); this.ok = 0; this.err = 0; this.ptrs = new Map();
+      host.querySelector('.tools').addEventListener('click', e => {
+        const b = e.target.closest('[data-z]'); if (!b) return;
+        if (b.dataset.z === 'fit') this.fit(); if (b.dataset.z === 'in') this.zoom(1); if (b.dataset.z === 'out') this.zoom(-1);
+      });
+      this.cv.addEventListener('wheel', e => { e.preventDefault(); this.zoom(-e.deltaY * 0.002, e.offsetX, e.offsetY); }, { passive: false });
+      this.cv.addEventListener('pointerdown', e => { this.cv.setPointerCapture(e.pointerId); this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY }); });
+      this.cv.addEventListener('pointermove', e => {
+        const r = this.cv.getBoundingClientRect(), ll = this.toLL(e.clientX - r.left, e.clientY - r.top);
+        this.coord.textContent = G.fmtDMS(ll.lat, 1) + ' N  ' + G.fmtDMS(ll.lon, 1) + ' E';
+        if (!this.ptrs.has(e.pointerId)) return;
+        const p = this.ptrs.get(e.pointerId);
+        if (this.ptrs.size === 1) {
+          const c = G.lonLatToPx(this.c.lon, this.c.lat, this.z);
+          this.c = G.pxToLonLat(c.x - (e.clientX - p.x), c.y - (e.clientY - p.y), this.z);
+          this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY }); this.schedule();
+        } else if (this.ptrs.size === 2) {
+          const [a, b] = [...this.ptrs.values()], d0 = Math.hypot(a.x - b.x, a.y - b.y);
+          this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+          const [c, d] = [...this.ptrs.values()], d1 = Math.hypot(c.x - d.x, c.y - d.y);
+          if (d0 > 0) this.zoom(Math.log2(d1 / d0), (c.x + d.x) / 2 - r.left, (c.y + d.y) / 2 - r.top);
+        }
+      });
+      const up = e => this.ptrs.delete(e.pointerId);
+      this.cv.addEventListener('pointerup', up); this.cv.addEventListener('pointercancel', up);
+      this.ro = new ResizeObserver(() => this.resize()); this.ro.observe(host);
+      this.resize();
+    }
+    resize() {
+      const dpr = window.devicePixelRatio || 1, w = this.host.clientWidth, h = this.host.clientHeight;
+      this.cv.width = w * dpr; this.cv.height = h * dpr; this.dpr = dpr; this.W = w; this.H = h;
+      this.draw();
+    }
+    toLL(x, y) { const c = G.lonLatToPx(this.c.lon, this.c.lat, this.z); return G.pxToLonLat(c.x + x - this.W / 2, c.y + y - this.H / 2, this.z); }
+    toPx(ll) { const c = G.lonLatToPx(this.c.lon, this.c.lat, this.z), p = G.lonLatToPx(ll.lon, ll.lat, this.z); return [p.x - c.x + this.W / 2, p.y - c.y + this.H / 2]; }
+    zoom(dz, x = this.W / 2, y = this.H / 2) {
+      const before = this.toLL(x, y);
+      this.z = Math.min(21, Math.max(3, this.z + dz));
+      const after = this.toLL(x, y);
+      this.c = { lat: this.c.lat + before.lat - after.lat, lon: this.c.lon + before.lon - after.lon };
+      this.schedule();
+    }
+    fit() {
+      const pts = []; (this.overlayFn().polys || []).forEach(p => pts.push(...p.ll));
+      if (!pts.length) return;
+      const lats = pts.map(p => p.lat), lons = pts.map(p => p.lon);
+      const minLa = Math.min(...lats), maxLa = Math.max(...lats), minLo = Math.min(...lons), maxLo = Math.max(...lons);
+      this.c = { lat: (minLa + maxLa) / 2, lon: (minLo + maxLo) / 2 };
+      for (let z = 21; z >= 3; z--) {
+        const a = G.lonLatToPx(minLo, maxLa, z), b = G.lonLatToPx(maxLo, minLa, z);
+        if (b.x - a.x < this.W - 100 && b.y - a.y < this.H - 100) { this.z = z; break; }
+      }
+      this.draw();
+    }
+    schedule() { if (this.raf) return; this.raf = requestAnimationFrame(() => { this.raf = 0; this.draw(); }); }
+    url(z, x, y) {
+      return this.layer === 'sat' ? `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}` : `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+    }
+    tile(z, x, y) {
+      const k = this.layer + z + '/' + x + '/' + y;
+      let t = this.cache.get(k);
+      if (!t) {
+        t = { img: new Image(), ok: false, bad: false };
+        t.img.onload = () => { t.ok = true; this.ok++; this.schedule(); this.onStatus && this.onStatus(); };
+        t.img.onerror = () => { t.bad = true; this.err++; this.onStatus && this.onStatus(); };
+        t.img.src = this.url(z, x, y);
+        this.cache.set(k, t);
+        if (this.cache.size > 400) this.cache.delete(this.cache.keys().next().value);
+      }
+      return t;
+    }
+    draw() {
+      const ctx = this.ctx, cs = getComputedStyle(document.documentElement);
+      ctx.lineJoin = 'round';
+      ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      ctx.fillStyle = cs.getPropertyValue('--plot-bg').trim(); ctx.fillRect(0, 0, this.W, this.H);
+      const tz = Math.min(this.layer === 'sat' ? 19 : 19, Math.max(0, Math.round(this.z)));
+      const sc = Math.pow(2, this.z - tz);
+      const c = G.lonLatToPx(this.c.lon, this.c.lat, tz);
+      const x0 = c.x - this.W / 2 / sc, y0 = c.y - this.H / 2 / sc, n = Math.pow(2, tz);
+      for (let tx = Math.floor(x0 / 256); tx <= Math.floor((x0 + this.W / sc) / 256); tx++) {
+        for (let ty = Math.floor(y0 / 256); ty <= Math.floor((y0 + this.H / sc) / 256); ty++) {
+          if (ty < 0 || ty >= n) continue;
+          const t = this.tile(tz, ((tx % n) + n) % n, ty);
+          const px = (tx * 256 - x0) * sc, py = (ty * 256 - y0) * sc;
+          if (t.ok) ctx.drawImage(t.img, px, py, 256 * sc + 0.5, 256 * sc + 0.5);
+          else { ctx.strokeStyle = cs.getPropertyValue('--grid').trim(); ctx.strokeRect(px, py, 256 * sc, 256 * sc); }
+        }
+      }
+      const ov = this.overlayFn();
+      for (const p of ov.polys || []) {
+        ctx.beginPath(); p.ll.forEach((q, i) => { const [x, y] = this.toPx(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath();
+        ctx.fillStyle = p.color + '33'; ctx.fill(); ctx.lineWidth = p.active ? 3 : 2; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+        ctx.lineWidth = p.active ? 2 : 1.4; ctx.strokeStyle = p.color; ctx.stroke();
+        p.ll.forEach((q, i) => {
+          const [x, y] = this.toPx(q);
+          ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 7); ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = p.color; ctx.stroke();
+          if (p.active) { ctx.font = '600 12px IBM Plex Sans, sans-serif'; ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.strokeText(String(i + 1), x + 6, y - 6); ctx.fillStyle = '#fff'; ctx.fillText(String(i + 1), x + 6, y - 6); }
+        });
+        if (p.label) {
+          const cx = p.ll.reduce((s, q) => s + q.lon, 0) / p.ll.length, cy = p.ll.reduce((s, q) => s + q.lat, 0) / p.ll.length;
+          const [x, y] = this.toPx({ lat: cy, lon: cx });
+          ctx.font = '600 13px IBM Plex Sans, sans-serif'; ctx.textAlign = 'center'; ctx.lineWidth = 3.5; ctx.strokeStyle = '#000'; ctx.strokeText(p.label, x, y); ctx.fillStyle = '#fff'; ctx.fillText(p.label, x, y); ctx.textAlign = 'start';
+        }
+      }
+      for (const t of ov.ties || []) {
+        const [x, y] = this.toPx(t.ll);
+        ctx.beginPath(); ctx.moveTo(x, y - 9); ctx.lineTo(x + 8, y + 6); ctx.lineTo(x - 8, y + 6); ctx.closePath(); ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#111'; ctx.lineWidth = 1.5; ctx.stroke();
+        if (t.label) { ctx.font = '600 12px IBM Plex Sans, sans-serif'; ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.strokeText(t.label, x + 10, y); ctx.fillStyle = '#fff'; ctx.fillText(t.label, x + 10, y); }
+      }
+      $('#attr', this.host).textContent = this.layer === 'sat' ? 'Imagery © Esri, Maxar, Earthstar Geographics' : '© OpenStreetMap contributors';
+    }
+    destroy() { this.ro.disconnect(); }
+  }
+
+  function lotsLL(onlyVisible = true) {
+    return S.project.lots.filter(L => !onlyVisible || L.visible !== false).map(L => {
+      const c = comp(L); if (!c.corners || c.corners.length < 3 || !isFinite(+L.tie.N) || L.tie.N === '') return null;
+      const ll = c.corners.map(toLL); if (ll.some(x => !x || !isFinite(x.lat))) return null;
+      return { L, c, ll, tieLL: toLL(c.tie) };
+    }).filter(Boolean);
+  }
+
+  VIEWS.map = el => {
+    refreshHook = null;
+    const data = lotsLL();
+    const act = data.find(d => d.L.id === lot().id) || data[0];
+    const cen = act ? { lat: act.ll.reduce((s, q) => s + q.lat, 0) / act.ll.length, lon: act.ll.reduce((s, q) => s + q.lon, 0) / act.ll.length } : null;
+    const gm = cen ? `https://www.google.com/maps/@?api=1&map_action=map&center=${cen.lat.toFixed(7)},${cen.lon.toFixed(7)}&zoom=19&basemap=satellite` : '';
+    const ge = cen ? `https://earth.google.com/web/search/${cen.lat.toFixed(7)},${cen.lon.toFixed(7)}` : '';
+    el.innerHTML = header('Satellite view', 'Lay the plotted lots over imagery to see where the TD actually falls on the ground.') + exampleBanner() +
+      `<div class="work"><div class="stack">
+        <div class="panel">${lotChips(false)}
+          <div class="row" style="margin-top:10px"><label class="f"><span>Base map</span><select id="mLayer"><option value="sat">Satellite (Esri)</option><option value="osm">Streets (OpenStreetMap)</option></select></label></div>
+          ${act ? `<h3>Corner positions · WGS 84</h3><div class="tblwrap"><table class="t"><thead><tr><th>Cor.</th><th>Latitude</th><th>Longitude</th></tr></thead><tbody>
+            ${act.ll.map((q, i) => `<tr><td>${i + 1}</td><td class="n">${G.fmtDMS(q.lat, 2)}</td><td class="n">${G.fmtDMS(q.lon, 2)}</td></tr>`).join('')}</tbody></table></div>
+            <div class="btns" style="margin-top:10px"><a class="btn" href="${gm}" target="_blank" rel="noopener">Open in Google Maps</a><a class="btn" href="${ge}" target="_blank" rel="noopener">Open in Google Earth</a></div>
+            <div class="btns" style="margin-top:6px"><button class="btn sm" id="mKml">${icon('download')}KML of all lots</button><button class="btn sm" id="mCopy">${icon('copy')}Copy center lat, long</button></div>
+            <p class="hint">Google Maps opens at the lot centre. Load the KML in Google Earth to see the full outlines.</p>`
+        : `<div class="callout warn" style="margin-top:10px">This lot can't be placed yet. It needs tie point coordinates and at least three lines.</div>`}
+        </div></div>
+        <div class="stack plotcol sticky-plot"><div id="mapHost"></div></div></div>`;
+    if (!data.length) { $('#mapHost', el).innerHTML = '<div class="plot"><div class="empty" style="padding-top:20vh"><h3>No lot on the grid yet</h3><p>Enter a tie point and lines in Plot TD.</p></div></div>'; bindLotChips(el); return; }
+    tileMap = new TileMap($('#mapHost', el), () => ({
+      polys: data.map(d => ({ ll: d.ll, color: d.L.color, label: d.L.name, active: d.L.id === lot().id })),
+      ties: data.filter(d => d.tieLL).map(d => ({ ll: d.tieLL, label: d.L.tie.name ? d.L.tie.name.split(',')[0] : 'Tie' }))
+    }));
+    tileMap.fit();
+    let warned = false;
+    tileMap.onStatus = () => {
+      if (!warned && tileMap.err >= 3 && tileMap.ok === 0) {
+        warned = true;
+        const n = document.createElement('div'); n.className = 'mapnote';
+        n.innerHTML = `Map imagery can't load inside this view, so the lots are drawn on a blank grid. Use <b>Open in Google Maps</b> or the KML file to check them on imagery. When GeoPlot runs as an installed app on a phone, the imagery shows here.`;
+        $('#mapHost', el).appendChild(n);
+      }
+    };
+    $('#mLayer', el).onchange = e => { tileMap.layer = e.target.value; tileMap.draw(); };
+    const k = $('#mKml', el); if (k) k.onclick = () => exportKML();
+    const cp = $('#mCopy', el); if (cp) cp.onclick = () => copyText(cen.lat.toFixed(7) + ', ' + cen.lon.toFixed(7));
+    bindLotChips(el);
+  };
+  function exportKML() {
+    const data = lotsLL(false);
+    if (!data.length) { toast('No lots on the grid yet.'); return; }
+    const kmlColor = hex => 'ff' + hex.slice(5, 7) + hex.slice(3, 5) + hex.slice(1, 3);
+    saveFile(safeName(S.project.name) + '.kml', G.toKML(S.project.name, data.map(d => ({ name: d.L.name, ll: d.ll, color: kmlColor(d.L.color) }))));
+  }
+
+  /* ----- Multi-lot check ----- */
+  VIEWS.lots = el => {
+    const tol = S.ccTol ?? 0.3;
+    const comps = S.project.lots.map(L => ({ L, c: comp(L) }));
+    const ok = comps.filter(x => x.c.corners && x.c.corners.length >= 3);
+    const cc = G.commonCorners(ok.map(x => x.c), tol);
+    const issues = [];
+    for (let i = 0; i < ok.length; i++) for (let j = i + 1; j < ok.length; j++) {
+      const A = ok[i].c.corners, B = ok[j].c.corners;
+      const x = G.edgeCrossings(A, B);
+      const inside = A.filter((p, k) => !cc.some(m => (m.i === i && m.a === k) || (m.j === i && m.b === k)) && G.pointInPoly(p, B)).length +
+        B.filter((p, k) => !cc.some(m => (m.j === j && m.b === k) || (m.i === j && m.a === k)) && G.pointInPoly(p, A)).length;
+      if (x || inside) issues.push({ a: ok[i].L.name, b: ok[j].L.name, x, inside });
+    }
+    el.innerHTML = header('Multi-lot check', 'Plot several lots together, adjust each one, and check shared corners for gaps and overlaps.') + exampleBanner() +
+      `<div class="work wide-left"><div class="stack">
+        <div class="panel"><h2>Lots</h2><div class="tblwrap"><table class="t"><thead><tr><th>Show</th><th>Lot</th><th class="n">Area sq.m</th><th>Precision</th><th>Adjustment</th></tr></thead><tbody>
+        ${comps.map(({ L, c }) => `<tr><td><input type="checkbox" data-vis="${L.id}" ${L.visible !== false ? 'checked' : ''} aria-label="Show ${esc(L.name)}"></td>
+          <td><span class="chip" style="cursor:default"><i style="background:${L.color}"></i>${esc(L.name)}</span></td><td class="n">${fx(c.area, 2)}</td>
+          <td><span class="pill ${precClass(c)}">${precText(c)}</span></td>
+          <td><select data-adj="${L.id}" aria-label="Adjustment for ${esc(L.name)}">${['none', 'compass', 'transit'].map(v => `<option value="${v}" ${L.adjust === v ? 'selected' : ''}>${{ none: 'None', compass: 'Compass', transit: 'Transit' }[v]}</option>`).join('')}</select></td></tr>`).join('')}
+        </tbody><tfoot><tr><td></td><td>Total</td><td class="n">${fx(comps.reduce((s, x) => s + (x.c.area || 0), 0), 2)}</td><td></td><td></td></tr></tfoot></table></div>
+        <div class="btns" style="margin-top:8px"><button class="btn sm" id="adjAll">Compass-adjust all</button></div></div>
+        <div class="panel"><h2>Common corners</h2>
+          <div class="row"><label class="f" style="max-width:200px"><span>Match corners within (m)</span><input id="ccTol" class="num" type="number" step="0.05" min="0" value="${tol}"></label></div>
+          ${cc.length ? `<div class="tblwrap" style="margin-top:8px"><table class="t"><thead><tr><th>Lot / corner</th><th>Lot / corner</th><th class="n">Gap (m)</th></tr></thead><tbody>
+            ${cc.map(m => `<tr><td>${esc(ok[m.i].L.name)} · ${m.a + 1}</td><td>${esc(ok[m.j].L.name)} · ${m.b + 1}</td><td class="n" style="color:${m.d > 0.05 ? 'var(--warn)' : 'inherit'}">${m.d.toFixed(3)}</td></tr>`).join('')}</tbody></table></div>
+            <div class="btns" style="margin-top:8px"><button class="btn sm" id="snap">Snap matched corners to their mean</button></div>
+            <p class="hint">Snapping rewrites the bearings and distances of the affected lots from the averaged corners.</p>` : `<p class="hint">No corners within ${tol} m of another lot's corner.</p>`}
+          <h3>Overlaps</h3>${issues.length ? issues.map(s => `<div class="callout warn" style="margin-bottom:6px"><b>${esc(s.a)}</b> and <b>${esc(s.b)}</b>: ${s.x ? s.x + ' crossing boundary line' + (s.x > 1 ? 's' : '') : ''}${s.x && s.inside ? ', ' : ''}${s.inside ? s.inside + ' corner' + (s.inside > 1 ? 's' : '') + ' inside the other lot' : ''}.</div>`).join('') : '<p class="hint">No crossing boundaries or corners inside another lot.</p>'}
+        </div></div>
+        <div class="stack plotcol sticky-plot"><div id="plotHost"></div></div></div>`;
+    plotView = new PlotView($('#plotHost', el), () => ({ items: lotScene(S.project.lots, { tie: false, ghost: true }) }));
+    refreshHook = null;
+    el.addEventListener('change', e => {
+      const v = e.target.closest('[data-vis]'), a = e.target.closest('[data-adj]');
+      if (v) { S.project.lots.find(l => l.id === v.dataset.vis).visible = v.checked; markDirty(); plotView.draw(); }
+      if (a) { S.project.lots.find(l => l.id === a.dataset.adj).adjust = a.value; markDirty(); render(); }
+    });
+    $('#ccTol', el).onchange = e => { S.ccTol = Math.max(0, +e.target.value || 0); render(); };
+    $('#adjAll', el).onclick = () => { S.project.lots.forEach(l => { if (l.mode !== 'coords') l.adjust = 'compass'; }); markDirty(); render(); };
+    const sn = $('#snap', el);
+    if (sn) sn.onclick = () => {
+      const corners = ok.map(x => x.c.corners.map(p => ({ ...p })));
+      cc.forEach(m => {
+        const p = corners[m.i][m.a], q = corners[m.j][m.b], mid = { N: (p.N + q.N) / 2, E: (p.E + q.E) / 2 };
+        corners[m.i][m.a] = mid; corners[m.j][m.b] = { ...mid };
+      });
+      const touched = new Set(cc.flatMap(m => [m.i, m.j]));
+      touched.forEach(i => {
+        const L = ok[i].L, td = G.lotFromCorners(ok[i].c.tie, corners[i], { minutesOnly: false, dp: 3 });
+        if (L.mode === 'coords') L.corners = corners[i].map(p => ({ N: p.N.toFixed(3), E: p.E.toFixed(3) }));
+        else { L.tieLine = td.tieLine; L.lines = td.lines; L.adjust = 'none'; L.xf = { rot: 0, dN: 0, dE: 0, pivot: 'centroid' }; }
+      });
+      markDirty(); render(); toast('Corners snapped and TDs rewritten');
+    };
+  };
+
+  /* ----- Rotate & move ----- */
+  VIEWS.move = el => {
+    const L = lot(); L.xf = L.xf || { rot: 0, dN: 0, dE: 0, pivot: 'centroid' };
+    const xf = L.xf;
+    el.innerHTML = header('Rotate & move', 'Turn or shift a lot to fit found monuments or imagery, then rewrite its technical description.') + exampleBanner() +
+      `<div class="work"><div class="stack"><div class="panel">${lotChips(false)}
+        <h3>Rotation</h3>
+        <div class="grid2"><label class="f"><span>Angle (° or d m s, + = clockwise)</span><input id="xRot" class="num" value="${esc(S.rotText ?? (xf.rot ? G.fmtDMS(xf.rot) : '0'))}"></label>
+        <label class="f"><span>About</span><select id="xPiv"><option value="centroid" ${xf.pivot === 'centroid' ? 'selected' : ''}>Lot centroid</option><option value="c1" ${xf.pivot === 'c1' ? 'selected' : ''}>Corner 1</option><option value="tie" ${xf.pivot === 'tie' ? 'selected' : ''}>Tie point</option></select></label></div>
+        <div class="btns" style="margin-top:6px">${[[-1, '−1°'], [-1 / 60, '−1′'], [-1 / 3600, '−1″'], [1 / 3600, '+1″'], [1 / 60, '+1′'], [1, '+1°']].map(([v, t]) => `<button class="btn sm" data-rot="${v}">${t}</button>`).join('')}</div>
+        <h3>Shift</h3>
+        <div class="grid2"><label class="f"><span>ΔN (m)</span><input id="xN" class="num" type="number" step="0.01" value="${xf.dN || 0}"></label><label class="f"><span>ΔE (m)</span><input id="xE" class="num" type="number" step="0.01" value="${xf.dE || 0}"></label></div>
+        <div class="btns" style="margin-top:6px">${[['N', 0.1], ['S', -0.1]].map(([t, v]) => `<button class="btn sm" data-dn="${v}">${t} 0.10</button>`).join('')}${[['E', 0.1], ['W', -0.1]].map(([t, v]) => `<button class="btn sm" data-de="${v}">${t} 0.10</button>`).join('')}</div>
+        <details class="more" style="margin-top:10px"><summary>Move a corner onto known coordinates</summary>
+          <div class="grid3" style="margin-top:8px"><label class="f"><span>Corner</span><select id="xc">${(comp(L).raw || []).map((_, i) => `<option value="${i}">${i + 1}</option>`).join('')}</select></label>
+          <label class="f"><span>To N</span><input id="xcN" class="num"></label><label class="f"><span>To E</span><input id="xcE" class="num"></label></div>
+          <button class="btn sm" id="xcGo" style="margin-top:6px">Compute shift</button></details>
+        <div class="sep"></div>
+        <div id="xSum" class="hint"></div>
+        <div class="btns" style="margin-top:10px"><button class="btn primary" id="xApply">Apply & rewrite TD</button><button class="btn" id="xReset">Reset</button></div>
+      </div></div><div class="stack plotcol sticky-plot"><div id="plotHost"></div></div></div>`;
+    const ghostOf = () => { const t = clone(lot()); t.xf = {}; return comp(t); };
+    plotView = new PlotView($('#plotHost', el), () => {
+      const g = ghostOf();
+      const items = g.corners && g.corners.length > 2 ? [{ t: 'poly', pts: g.corners, stroke: 'var(--muted)', fill: 'none', w: 1.2, dash: '5 4', fit: true }] : [];
+      return { items: items.concat(lotScene([lot()], { activeId: lot().id })) };
+    });
+    const sum = () => {
+      const c = comp(lot()), g = ghostOf();
+      $('#xSum', el).innerHTML = c.corners && g.corners ? `Rotation ${G.fmtDMS(lot().xf.rot || 0)} · shift N ${fx(lot().xf.dN || 0, 3)} E ${fx(lot().xf.dE || 0, 3)} m · corner 1 moves ${fx(Math.hypot(c.corners[0].N - g.corners[0].N, c.corners[0].E - g.corners[0].E), 3)} m. Dashed: original position.` : '';
+    };
+    sum();
+    const upd = () => { plotView.draw(); sum(); markDirty(); };
+    refreshHook = () => { plotView.draw(); sum(); };
+    $('#xRot', el).oninput = e => { S.rotText = e.target.value; const v = G.parseAngle(e.target.value); if (v != null) { lot().xf.rot = /^-/.test(e.target.value.trim()) ? -Math.abs(v) : v; upd(); } };
+    $('#xPiv', el).onchange = e => { lot().xf.pivot = e.target.value; upd(); };
+    $('#xN', el).oninput = e => { lot().xf.dN = +e.target.value || 0; upd(); };
+    $('#xE', el).oninput = e => { lot().xf.dE = +e.target.value || 0; upd(); };
+    el.addEventListener('click', e => {
+      const r = e.target.closest('[data-rot]'), n = e.target.closest('[data-dn]'), d = e.target.closest('[data-de]');
+      if (r) { lot().xf.rot = +((lot().xf.rot || 0) + +r.dataset.rot).toFixed(8); S.rotText = G.fmtDMS(lot().xf.rot); $('#xRot', el).value = S.rotText; upd(); }
+      if (n) { lot().xf.dN = +((lot().xf.dN || 0) + +n.dataset.dn).toFixed(3); $('#xN', el).value = lot().xf.dN; upd(); }
+      if (d) { lot().xf.dE = +((lot().xf.dE || 0) + +d.dataset.de).toFixed(3); $('#xE', el).value = lot().xf.dE; upd(); }
+    });
+    $('#xcGo', el).onclick = () => {
+      const i = +$('#xc', el).value, N = +$('#xcN', el).value.replace(/,/g, ''), E = +$('#xcE', el).value.replace(/,/g, '');
+      if (!isFinite(N) || !isFinite(E) || !N || !E) { toast('Enter the target northing and easting.'); return; }
+      const t = clone(lot()); t.xf = { ...t.xf, dN: 0, dE: 0 }; const c = comp(t);
+      lot().xf.dN = +(N - c.corners[i].N).toFixed(3); lot().xf.dE = +(E - c.corners[i].E).toFixed(3);
+      $('#xN', el).value = lot().xf.dN; $('#xE', el).value = lot().xf.dE; upd();
+    };
+    $('#xApply', el).onclick = () => {
+      const L2 = lot(), c = comp(L2);
+      if (!c.ok) { toast('Fix the lot errors in Plot TD first.'); return; }
+      if (L2.mode === 'coords') L2.corners = c.corners.map(p => ({ N: p.N.toFixed(3), E: p.E.toFixed(3) }));
+      else { const td = G.lotFromCorners(c.tie, c.corners, { minutesOnly: false, dp: 3 }); L2.tieLine = td.tieLine; L2.lines = td.lines; L2.adjust = 'none'; }
+      L2.xf = { rot: 0, dN: 0, dE: 0, pivot: L2.xf.pivot }; S.rotText = null; markDirty(); render(); toast('TD rewritten for the new position');
+    };
+    $('#xReset', el).onclick = () => { lot().xf = { rot: 0, dN: 0, dE: 0, pivot: 'centroid' }; S.rotText = null; markDirty(); render(); };
+    bindLotChips(el, () => { S.rotText = null; render(); });
+  };
+
+  /* ----- Subdivision ----- */
+  VIEWS.subdivide = el => {
+    const L = lot(), c = comp(L);
+    const st = S.sub = S.sub || { method: 'parallel', side: 0, corner: 0, area: '', parts: 2 };
+    const n = c.corners ? c.corners.length : 0;
+    if (st.side >= n) st.side = 0; if (st.corner >= n) st.corner = 0;
+    if (st.forLot !== L.id) { st.forLot = L.id; st.area = c.ok ? String(Math.round(c.area / 2)) : ''; }
+    el.innerHTML = header('Subdivision', 'Split a lot by a given area or into equal parts. New lots get their own technical descriptions.') + exampleBanner() +
+      `<div class="work"><div class="stack"><div class="panel">${lotChips(false)}
+        ${!c.ok ? `<div class="callout warn" style="margin-top:10px">This lot has errors. Fix them in Plot TD first.</div>` : `
+        <p class="hint" style="margin:10px 0 0">Parent lot: <b class="mono">${fx(c.area, 2)}</b> sq.m</p>
+        <label class="f" style="margin-top:8px"><span>Method</span><select id="sM">
+          <option value="parallel" ${st.method === 'parallel' ? 'selected' : ''}>Cut an area with a line parallel to a side</option>
+          <option value="pivot" ${st.method === 'pivot' ? 'selected' : ''}>Cut an area with a line through a corner</option>
+          <option value="equal" ${st.method === 'equal' ? 'selected' : ''}>Equal parts parallel to a side</option></select></label>
+        <div class="grid2" style="margin-top:8px">
+          ${st.method === 'pivot' ? `<label class="f"><span>Through corner</span><select id="sC">${c.corners.map((_, i) => `<option value="${i}" ${i === st.corner ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></label>`
+        : `<label class="f"><span>Parallel to side</span><select id="sS">${c.corners.map((_, i) => `<option value="${i}" ${i === st.side ? 'selected' : ''}>${i + 1}–${(i + 1) % n + 1}</option>`).join('')}</select></label>`}
+          ${st.method === 'equal' ? `<label class="f"><span>Number of parts</span><input id="sP" class="num" type="number" min="2" max="40" value="${st.parts}"></label>`
+        : `<label class="f"><span>Area to cut (sq.m)</span><input id="sA" class="num" inputmode="decimal" value="${esc(st.area)}" placeholder="${fx(c.area / 2, 0)}"></label>`}
+        </div>
+        <div id="sOut" style="margin-top:10px"></div>
+        <div class="btns" style="margin-top:10px"><button class="btn primary" id="sGo">Create lots</button></div>
+        <p class="hint">The parent lot is hidden, not deleted. Turn it back on in Multi-lot check.</p>`}
+      </div></div><div class="stack plotcol sticky-plot"><div id="plotHost"></div></div></div>`;
+    const parts = () => {
+      if (!c.ok) return null;
+      try {
+        if (st.method === 'equal') return G.equalParts(c.corners, st.side, Math.max(2, Math.min(40, +st.parts || 2)));
+        const a = parseFloat(String(st.area).replace(/,/g, ''));
+        if (!(a > 0)) return null;
+        const r = st.method === 'pivot' ? G.cutPivot(c.corners, st.corner, a) : G.cutParallel(c.corners, st.side, a);
+        return [r.part, r.rest];
+      } catch (e) { return { error: e.message }; }
+    };
+    const PCOL = ['#e8590c', '#1c7ed6', '#37b24d', '#ae3ec9', '#f59f00', '#0ca678', '#d6336c', '#4263eb'];
+    plotView = new PlotView($('#plotHost', el), () => {
+      const items = [{ t: 'poly', pts: c.corners || [], stroke: L.color, fill: 'none', w: 2 }];
+      (c.corners || []).forEach((p, i) => items.push({ t: 'pt', p, stroke: L.color, label: String(i + 1) }));
+      const ps = parts();
+      if (Array.isArray(ps)) ps.forEach((pp, k) => { if (pp.length > 2) { items.push({ t: 'poly', pts: pp, stroke: PCOL[k % PCOL.length], fill: PCOL[k % PCOL.length], fo: 0.22, w: 1.6 }); items.push({ t: 'text', p: G.centroid(pp), text: L.name + '-' + String.fromCharCode(65 + k) + '\n' + fx(G.area(pp), 2), color: PCOL[k % PCOL.length], size: 12 }); } });
+      return { items };
+    });
+    const out = () => {
+      const o = $('#sOut', el); if (!o) return;
+      const ps = parts();
+      if (!ps) { o.innerHTML = '<p class="hint">Enter the area to cut.</p>'; return; }
+      if (ps.error) { o.innerHTML = `<div class="callout warn">${esc(ps.error)}</div>`; return; }
+      o.innerHTML = `<table class="t"><thead><tr><th>New lot</th><th class="n">Area sq.m</th><th class="n">Corners</th></tr></thead><tbody>${ps.map((pp, k) => `<tr><td><span style="color:${PCOL[k % PCOL.length]}">■</span> ${esc(L.name)}-${String.fromCharCode(65 + k)}</td><td class="n">${fx(G.area(pp), 2)}</td><td class="n">${pp.length}</td></tr>`).join('')}</tbody></table>`;
+    };
+    out();
+    refreshHook = () => { plotView.draw(); out(); };
+    if (!c.ok) { bindLotChips(el); return; }
+    const redo = () => { plotView.draw(); out(); };
+    $('#sM', el).onchange = e => { st.method = e.target.value; render(); };
+    const sS = $('#sS', el); if (sS) sS.onchange = e => { st.side = +e.target.value; redo(); };
+    const sC = $('#sC', el); if (sC) sC.onchange = e => { st.corner = +e.target.value; redo(); };
+    const sA = $('#sA', el); if (sA) sA.oninput = e => { st.area = e.target.value; redo(); };
+    const sP = $('#sP', el); if (sP) sP.oninput = e => { st.parts = e.target.value; redo(); };
+    $('#sGo', el).onclick = () => {
+      const ps = parts();
+      if (!Array.isArray(ps)) { toast('Set up a valid cut first.'); return; }
+      const parent = lot(); parent.visible = false;
+      let first;
+      ps.forEach((pp, k) => {
+        // start each new lot at the corner nearest the parent's corner 1, clockwise like the parent
+        let pts = pp.slice();
+        if (G.signedArea(pts) > 0 !== G.signedArea(c.corners) > 0) pts.reverse();
+        const k0 = pts.reduce((best, p, i) => Math.hypot(p.N - c.corners[0].N, p.E - c.corners[0].E) < Math.hypot(pts[best].N - c.corners[0].N, pts[best].E - c.corners[0].E) ? i : best, 0);
+        pts = pts.slice(k0).concat(pts.slice(0, k0));
+        const NL = newLot(0, S.project.lots.length);
+        NL.name = parent.name + '-' + String.fromCharCode(65 + k); NL.tie = clone(parent.tie);
+        const td = G.lotFromCorners(c.tie, pts, { minutesOnly: false, dp: 2 });
+        NL.tieLine = td.tieLine; NL.lines = td.lines; NL.claimant = parent.claimant;
+        S.project.lots.push(NL); if (!first) first = NL;
+      });
+      S.lotId = first.id; markDirty(); toast(ps.length + ' lots created'); go('plot');
+    };
+    bindLotChips(el);
+  };
+
+  /* ----- Best fit ----- */
+  VIEWS.bestfit = el => {
+    const P = S.project;
+    if (!P.control || !P.control.length) P.control = [{ name: '', fN: '', fE: '', tN: '', tE: '', use: true }, { name: '', fN: '', fE: '', tN: '', tE: '', use: true }, { name: '', fN: '', fE: '', tN: '', tE: '', use: true }];
+    const model = S.bfModel || 'similarity';
+    el.innerHTML = header('Best fit', 'Fit the plotted corners onto monuments found in the field by least squares, and see how well they agree.') + exampleBanner() +
+      `<div class="work wide-left"><div class="stack"><div class="panel">
+        <p class="hint" style="margin-top:0"><b>From</b> = computed (plotted) coordinates. <b>To</b> = what you found or observed. Untick a point to leave it out of the fit and see its residual.</p>
+        <div class="btns" style="margin-bottom:8px"><button class="btn sm" id="bfFill">Fill "From" with ${esc(lot().name)} corners</button></div>
+        <div class="tblwrap"><table class="t lines"><thead><tr><th>Use</th><th>Point</th><th>From N</th><th>From E</th><th>To N</th><th>To E</th><th></th></tr></thead><tbody>
+        ${P.control.map((r, i) => `<tr><td><input type="checkbox" data-u="${i}" ${r.use !== false ? 'checked' : ''} aria-label="Use point ${i + 1}"></td>
+          ${['name', 'fN', 'fE', 'tN', 'tE'].map(k => `<td><input data-k="${k}" data-i="${i}" value="${esc(r[k])}" ${k !== 'name' ? 'inputmode="decimal"' : ''} style="min-width:${k === 'name' ? 60 : 110}px" aria-label="${k} ${i + 1}"></td>`).join('')}
+          <td><button class="btn sm ghost" data-rm="${i}" aria-label="Remove row">${icon('trash')}</button></td></tr>`).join('')}</tbody></table></div>
+        <div class="btns" style="margin-top:8px"><button class="btn sm" id="bfAdd">${icon('plus')}Add point</button></div>
+        <label class="f" style="margin-top:10px;max-width:320px"><span>Model</span><select id="bfM">
+          <option value="translation" ${model === 'translation' ? 'selected' : ''}>Shift only (2 parameters)</option>
+          <option value="similarity" ${model === 'similarity' ? 'selected' : ''}>Shift, rotate, scale (4-parameter Helmert)</option>
+          <option value="affine" ${model === 'affine' ? 'selected' : ''}>Affine (6 parameters)</option></select></label>
+      </div></div>
+      <div class="stack"><div class="panel" id="bfOut"></div></div></div>`;
+    const pairs = (all) => P.control.map((r, i) => ({ i, r, x: +String(r.fE).replace(/,/g, ''), y: +String(r.fN).replace(/,/g, ''), X: +String(r.tE).replace(/,/g, ''), Y: +String(r.tN).replace(/,/g, '') }))
+      .filter(p => (all || p.r.use !== false) && [p.x, p.y, p.X, p.Y].every(v => isFinite(v) && v !== 0));
+    const compute = () => {
+      const o = $('#bfOut', el);
+      const use = pairs(false);
+      let f;
+      try { f = G.bestFit(use, S.bfModel || 'similarity'); }
+      catch (e) { o.innerHTML = `<h2>Result</h2><p class="hint">${esc(e.message)} Enter at least ${(S.bfModel || 'similarity') === 'affine' ? 3 : (S.bfModel || 'similarity') === 'similarity' ? 2 : 1} complete points.</p>`; return null; }
+      const all = pairs(true);
+      const rows = all.map(p => { const q = f.fn(p.x, p.y); return { p, dN: p.Y - q.Y, dE: p.X - q.X }; });
+      const pr = f.params;
+      o.innerHTML = `<h2>Result</h2><div class="stats">
+        <div class="stat"><div class="k">RMS residual</div><div class="v">${fx(f.rms, 3)}</div><div class="s">m · ${use.length} points</div></div>
+        <div class="stat"><div class="k">Rotation</div><div class="v">${G.fmtDMS(pr.rot || 0, 1)}</div><div class="s">+ = clockwise</div></div>
+        <div class="stat"><div class="k">Scale</div><div class="v">${(pr.scale || 1).toFixed(6)}</div><div class="s">${fx(((pr.scale || 1) - 1) * 1e6, 0)} ppm</div></div>
+        ${f.sigma0 != null ? `<div class="stat"><div class="k">σ₀</div><div class="v">${fx(f.sigma0, 3)}</div><div class="s">m · ${f.dof} redundancies</div></div>` : ''}
+      </div>
+      <h3>Residuals (found − fitted)</h3><div class="tblwrap"><table class="t"><thead><tr><th>Point</th><th class="n">dN</th><th class="n">dE</th><th class="n">Total</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td>${esc(r.p.r.name || r.p.i + 1)}${r.p.r.use === false ? ' <span class="pill muted">check</span>' : ''}</td><td class="n">${fx(r.dN, 3)}</td><td class="n">${fx(r.dE, 3)}</td><td class="n" style="color:${Math.hypot(r.dN, r.dE) > 3 * Math.max(f.rms, 0.01) ? 'var(--bad)' : 'inherit'}">${fx(Math.hypot(r.dN, r.dE), 3)}</td></tr>`).join('')}</tbody></table></div>
+      <p class="hint">Residuals over three times the RMS are shown in red — likely a disturbed monument or a misread value.</p>
+      <div class="sep"></div><h3>Apply the fit</h3>
+      <div class="btns"><button class="btn primary" id="bfApply">Apply to ${esc(lot().name)}</button><button class="btn" id="bfApplyAll">Apply to all lots</button></div>
+      <p class="hint">Moves every corner through the fitted transformation and rewrites the TD. The tie point stays where it is.</p>`;
+      const apply = lots => {
+        lots.forEach(L => {
+          const c = comp(L); if (!c.ok) return;
+          const pts = c.corners.map(p => { const q = f.fn(p.E, p.N); return { E: q.X, N: q.Y }; });
+          if (L.mode === 'coords') L.corners = pts.map(p => ({ N: p.N.toFixed(3), E: p.E.toFixed(3) }));
+          else { const td = G.lotFromCorners(c.tie, pts, { minutesOnly: false, dp: 3 }); L.tieLine = td.tieLine; L.lines = td.lines; L.adjust = 'none'; L.xf = { rot: 0, dN: 0, dE: 0, pivot: 'centroid' }; }
+        });
+        markDirty(); toast('Fit applied'); go('plot');
+      };
+      $('#bfApply', o).onclick = () => apply([lot()]);
+      $('#bfApplyAll', o).onclick = () => apply(S.project.lots);
+      return f;
+    };
+    compute();
+    refreshHook = compute;
+    el.addEventListener('input', e => { const t = e.target; if (t.dataset.k) { P.control[+t.dataset.i][t.dataset.k] = t.value; markDirty(); compute(); } });
+    el.addEventListener('change', e => { const t = e.target; if (t.dataset.u != null) { P.control[+t.dataset.u].use = t.checked; markDirty(); compute(); } });
+    el.addEventListener('click', e => { const r = e.target.closest('[data-rm]'); if (r) { P.control.splice(+r.dataset.rm, 1); markDirty(); render(); } });
+    $('#bfAdd', el).onclick = () => { P.control.push({ name: '', fN: '', fE: '', tN: '', tE: '', use: true }); markDirty(); render(); };
+    $('#bfM', el).onchange = e => { S.bfModel = e.target.value; compute(); };
+    $('#bfFill', el).onclick = () => {
+      const c = comp(lot()); if (!c.ok) { toast('This lot has errors.'); return; }
+      P.control = c.corners.map((p, i) => ({ name: String(i + 1), fN: p.N.toFixed(3), fE: p.E.toFixed(3), tN: P.control[i]?.tN || '', tE: P.control[i]?.tE || '', use: true }));
+      markDirty(); render();
+    };
+  };
+
+  /* ----- Survey returns ----- */
+  function returnsData(L) {
+    const c = comp(L);
+    const rows = [];
+    if (c.finalTie) {
+      const lat = c.corners[0].N - c.tie.N, dep = c.corners[0].E - c.tie.E;
+      rows.push({ line: 'TP–1', az: c.finalTie.az, d: c.finalTie.d, lat, dep, N: c.corners[0].N, E: c.corners[0].E, tie: true });
+    }
+    const n = c.corners.length;
+    (c.finalLines || []).forEach((v, i) => {
+      const to = c.corners[(i + 1) % n];
+      rows.push({ line: (i + 1) + '–' + ((i + 1) % n + 1), az: v.az, d: v.d, lat: v.dN, dep: v.dE, N: to.N, E: to.E });
+    });
+    return { c, rows };
+  }
+  VIEWS.returns = el => {
+    refreshHook = null;
+    const L = lot();
+    const { c, rows } = returnsData(L);
+    const mo = S.project.minutesOnly;
+    if (!c.ok) {
+      el.innerHTML = header('Survey returns', 'Computation sheets and technical description for the selected lot.') + `<div class="panel">${lotChips(false)}<div class="callout warn" style="margin-top:10px">${c.errors.map(esc).join('<br>') || 'This lot is incomplete.'}</div><div class="btns" style="margin-top:10px"><button class="btn" data-nav="plot">Go to Plot TD</button></div></div>`;
+      bindLotChips(el); return;
+    }
+    const td = G.narrativeTD(L, c, { minutesOnly: mo, lotTitle: L.name + (L.surveyNo ? ', ' + L.surveyNo : '') });
+    const cl = c.closure;
+    const adjRows = L.mode !== 'coords' && L.adjust !== 'none' ? c.lines : null;
+    // area by coordinates (double area)
+    let dbl = 0;
+    const arows = c.corners.map((p, i) => { const q = c.corners[(i + 1) % c.corners.length]; const t = p.E * q.N - q.E * p.N; dbl += t; return { i, p, t }; });
+    const ll = c.corners.map(toLL);
+    const prsGeo = c.corners.map(p => { try { return G.convert(p, S.project.sys, (G.SYSTEMS[S.project.sys].datum === 'PRS92' ? 'PRS92_GEO' : 'WGS84_GEO')); } catch (e) { return null; } });
+    el.innerHTML = header('Survey returns', 'Lot data computation, closure, area and technical description, ready to check and export.') + exampleBanner() +
+      `<div class="panel noprint" style="margin-bottom:12px">${lotChips(false)}
+        <div class="btns" style="margin-top:10px">
+          <button class="btn" id="rCsv">${icon('download')}Computation CSV</button>
+          <button class="btn" id="rHtml">${icon('download')}Full returns (HTML)</button>
+          <button class="btn" id="rDxf">${icon('download')}DXF for CAD</button>
+          <button class="btn" id="rKml">${icon('download')}KML</button>
+          ${!S.inFrame ? '<button class="btn" id="rPrint">Print</button>' : ''}
+        </div></div>
+      <div class="stack" id="returnsBody">
+      <div class="panel"><h2>Lot data computation · ${esc(L.name)}</h2>
+        <p class="hint" style="margin-top:0">${esc(sys().label)} · tie point ${esc(L.tie.name || '—')} (N ${fx(c.tie.N, 3)}, E ${fx(c.tie.E, 3)})${L.adjust !== 'none' && L.mode !== 'coords' ? ' · adjusted by ' + L.adjust + ' rule' : ''}${c.transformed ? ' · rotated/moved' : ''}</p>
+        <div class="tblwrap"><table class="t"><thead><tr><th>Line</th><th>Bearing</th><th class="n">Distance</th><th class="n">Lat N(+)</th><th class="n">Lat S(−)</th><th class="n">Dep E(+)</th><th class="n">Dep W(−)</th><th class="n">Northing</th><th class="n">Easting</th></tr></thead><tbody>
+        ${rows.map(r => `<tr${r.tie ? ' style="color:var(--muted)"' : ''}><td>${r.line}</td><td class="mono">${G.fmtBearing(r.az, 'dms', mo)}</td><td class="n">${fx(r.d, 2)}</td>
+          <td class="n">${r.lat >= 0 ? fx(r.lat, 3) : ''}</td><td class="n">${r.lat < 0 ? fx(-r.lat, 3) : ''}</td><td class="n">${r.dep >= 0 ? fx(r.dep, 3) : ''}</td><td class="n">${r.dep < 0 ? fx(-r.dep, 3) : ''}</td>
+          <td class="n">${fx(r.N, 3)}</td><td class="n">${fx(r.E, 3)}</td></tr>`).join('')}</tbody></table></div></div>
+      ${L.mode !== 'coords' ? `<div class="panel"><h2>Closure</h2><div class="stats">
+        <div class="stat"><div class="k">Σ Latitudes</div><div class="v">${fx(cl.sumLat, 3)}</div></div>
+        <div class="stat"><div class="k">Σ Departures</div><div class="v">${fx(cl.sumDep, 3)}</div></div>
+        <div class="stat"><div class="k">Linear error</div><div class="v">${fx(cl.misclosure, 3)}</div><div class="s">m · closing direction ${G.fmtBearing(cl.misAz, 'dms', true)}</div></div>
+        <div class="stat"><div class="k">Perimeter</div><div class="v">${fx(cl.perimeter, 2)}</div></div>
+        <div class="stat"><div class="k">Precision</div><div class="v">${precText(c)}</div><div class="s"><span class="pill ${precClass(c)}">${precClass(c) === 'good' ? 'within' : 'exceeds'} 1:${S.project.minPrec.toLocaleString('en-US')}</span></div></div></div>
+        ${adjRows ? `<h3>${L.adjust === 'compass' ? 'Compass' : 'Transit'} rule corrections</h3><div class="tblwrap"><table class="t"><thead><tr><th>Line</th><th class="n">Lat</th><th class="n">Corr.</th><th class="n">Dep</th><th class="n">Corr.</th><th>Adj. bearing</th><th class="n">Adj. dist.</th></tr></thead><tbody>
+        ${adjRows.map((a, i) => `<tr><td>${i + 1}–${(i + 1) % adjRows.length + 1}</td><td class="n">${fx(cl.rows[i].lat, 3)}</td><td class="n">${fx(a.cLat, 4)}</td><td class="n">${fx(cl.rows[i].dep, 3)}</td><td class="n">${fx(a.cDep, 4)}</td><td class="mono">${G.fmtBearing(a.az, 'dms', false)}</td><td class="n">${fx(a.d, 3)}</td></tr>`).join('')}</tbody></table></div>` : ''}</div>` : ''}
+      <div class="panel"><h2>Area by coordinates</h2><div class="tblwrap"><table class="t"><thead><tr><th>Cor.</th><th class="n">Northing</th><th class="n">Easting</th><th class="n">E·N(next) − E(next)·N</th></tr></thead><tbody>
+        ${arows.map(r => `<tr><td>${r.i + 1}</td><td class="n">${fx(r.p.N, 3)}</td><td class="n">${fx(r.p.E, 3)}</td><td class="n">${fx(r.t, 3)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr><td colspan="3">Double area</td><td class="n">${fx(Math.abs(dbl), 3)}</td></tr><tr><td colspan="3">Area</td><td class="n">${fx(Math.abs(dbl) / 2, 3)} sq.m</td></tr></tfoot></table></div></div>
+      <div class="panel"><h2>Technical description</h2><pre class="td" id="tdText">${esc(td)}</pre>
+        <div class="btns noprint" style="margin-top:8px"><button class="btn sm" id="rCopy">${icon('copy')}Copy TD</button><button class="btn sm" id="rTxt">${icon('download')}TD as text</button></div></div>
+      <div class="panel"><h2>Corner positions</h2><div class="tblwrap"><table class="t"><thead><tr><th>Cor.</th><th class="n">Northing</th><th class="n">Easting</th><th class="n">Lat (WGS 84)</th><th class="n">Long (WGS 84)</th>${prsGeo[0] && G.SYSTEMS[S.project.sys].datum === 'PRS92' ? '<th class="n">Lat (PRS92)</th><th class="n">Long (PRS92)</th>' : ''}</tr></thead><tbody>
+        ${c.corners.map((p, i) => `<tr><td>${i + 1}</td><td class="n">${fx(p.N, 3)}</td><td class="n">${fx(p.E, 3)}</td><td class="n">${ll[i] ? G.fmtDMS(ll[i].lat, 3) : '—'}</td><td class="n">${ll[i] ? G.fmtDMS(ll[i].lon, 3) : '—'}</td>${prsGeo[0] && G.SYSTEMS[S.project.sys].datum === 'PRS92' ? `<td class="n">${G.fmtDMS(prsGeo[i].lat, 3)}</td><td class="n">${G.fmtDMS(prsGeo[i].lon, 3)}</td>` : ''}</tr>`).join('')}</tbody></table></div></div>
+      </div>`;
+    $('#rCopy', el).onclick = () => copyText(td, 'TD copied');
+    $('#rTxt', el).onclick = () => saveFile(safeName(L.name) + '_TD.txt', td);
+    $('#rCsv', el).onclick = () => {
+      const csv = ['Line,Bearing,Distance,Latitude,Departure,Northing,Easting'].concat(rows.map(r => [r.line, G.fmtBearing(r.az, 'plain', false), r.d.toFixed(3), r.lat.toFixed(4), r.dep.toFixed(4), r.N.toFixed(4), r.E.toFixed(4)].join(','))).join('\n');
+      saveFile(safeName(L.name) + '_computation.csv', csv);
+    };
+    $('#rHtml', el).onclick = () => {
+      const body = $('#returnsBody', el).innerHTML;
+      const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(L.name)} — survey returns</title><style>body{font:13px Arial,sans-serif;margin:24px;color:#111}h2{font-size:16px;text-transform:uppercase;margin:18px 0 6px}table{border-collapse:collapse;width:100%;margin:6px 0}th,td{border:1px solid #999;padding:3px 6px;font-size:12px}th{background:#eee;text-align:left}.n{text-align:right;font-family:Consolas,monospace}.mono{font-family:Consolas,monospace}.stats{display:flex;flex-wrap:wrap;gap:18px}.stat .k{font-size:10px;text-transform:uppercase;color:#555}.stat .v{font:15px Consolas,monospace}.pill{font-size:10px;border:1px solid;padding:0 4px;border-radius:6px}pre{white-space:pre-wrap;font:13px/1.6 Arial,sans-serif;border:1px solid #999;padding:10px}.hint{color:#555}.noprint{display:none}.panel{page-break-inside:avoid}</style></head><body>
+        <h1 style="font-size:20px;margin:0">${esc(S.project.company)} — Survey returns</h1><p>${esc(S.project.name)} · ${esc(S.project.location)} · prepared ${new Date().toLocaleDateString()} by ${esc(S.project.surveyor)}${S.project.license ? ', PRC ' + esc(S.project.license) : ''}</p>${body}</body></html>`;
+      saveFile(safeName(L.name) + '_returns.html', html);
+    };
+    $('#rDxf', el).onclick = () => exportDXF([L]);
+    $('#rKml', el).onclick = () => exportKML();
+    const pr = $('#rPrint', el); if (pr) pr.onclick = () => window.print();
+    bindLotChips(el);
+  };
+  function exportDXF(lots) {
+    const layers = [{ name: 'LOT', color: 1, polylines: [], texts: [] }, { name: 'TIE', color: 3, polylines: [], texts: [] }, { name: 'CORNERS', color: 2, points: [], texts: [] }, { name: 'LABELS', color: 7, texts: [] }];
+    lots.forEach(L => {
+      const c = comp(L); if (!c.ok) return;
+      layers[0].polylines.push({ pts: c.corners, closed: true });
+      const h = Math.max(0.2, Math.sqrt(c.area) / 40);
+      layers[0].texts.push({ E: c.centroid.E, N: c.centroid.N, h: h * 1.4, text: L.name + ' (' + c.area.toFixed(0) + ' sq.m)' });
+      layers[1].polylines.push({ pts: [c.tie, c.corners[0]], closed: false });
+      layers[1].texts.push({ E: c.tie.E, N: c.tie.N, h, text: L.tie.name || 'TIE' });
+      c.corners.forEach((p, i) => { layers[2].points.push(p); layers[2].texts.push({ E: p.E + h * 0.3, N: p.N + h * 0.3, h, text: String(i + 1) }); });
+      c.finalLines.forEach((v, i) => {
+        const a = c.corners[i], b = c.corners[(i + 1) % c.corners.length];
+        let rot = Math.atan2(b.N - a.N, b.E - a.E) * 180 / Math.PI; if (rot > 90) rot -= 180; if (rot < -90) rot += 180;
+        layers[3].texts.push({ E: (a.E + b.E) / 2, N: (a.N + b.N) / 2, h: h * 0.8, rot, text: G.fmtBearing(v.az, 'dms', S.project.minutesOnly).replace('°', '%%d') + ' ' + v.d.toFixed(2) });
+      });
+    });
+    saveFile(safeName(lots.length === 1 ? lots[0].name : S.project.name) + '.dxf', G.toDXF(layers));
+  }
+
+  /* ----- Location plan ----- */
+  function planSVG(L, c, P, opts = {}) {
+    const W = 210, H = 297, m = 10;
+    const pl = P.plan || {};
+    const box = { x: m + 2, y: 42, w: W - 2 * m - 4, h: 140 };
+    // choose a standard scale that fits the lot in the drawing box
+    let minE = Math.min(...c.corners.map(p => p.E)), maxE = Math.max(...c.corners.map(p => p.E));
+    let minN = Math.min(...c.corners.map(p => p.N)), maxN = Math.max(...c.corners.map(p => p.N));
+    const SC = [100, 200, 250, 300, 400, 500, 600, 750, 1000, 1200, 1500, 2000, 2500, 3000, 4000, 5000, 7500, 10000, 15000, 20000, 25000, 50000];
+    const scale = (+pl.scale && +pl.scale > 0) ? +pl.scale : (SC.find(s => (maxE - minE) * 1000 / s <= box.w - 36 && (maxN - minN) * 1000 / s <= box.h - 30) || 50000);
+    const k = 1000 / scale; // mm on paper per metre
+    const cE = (minE + maxE) / 2, cN = (minN + maxN) / 2;
+    const X = p => box.x + box.w / 2 + (p.E - cE) * k, Y = p => box.y + box.h / 2 - (p.N - cN) * k;
+    const f = (v, d = 2) => v.toFixed(d);
+    const mo = P.minutesOnly;
+    let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}mm" height="${H}mm" font-family="Arial, Helvetica, sans-serif" fill="#111">
+      <rect width="${W}" height="${H}" fill="#fff"/>
+      <rect x="${m}" y="${m}" width="${W - 2 * m}" height="${H - 2 * m}" fill="none" stroke="#111" stroke-width="0.6"/>
+      <text x="${W / 2}" y="${m + 10}" text-anchor="middle" font-size="7" font-weight="700" letter-spacing="0.6">LOCATION PLAN</text>
+      <text x="${W / 2}" y="${m + 16}" text-anchor="middle" font-size="4.2" font-weight="700">${esc((pl.title || L.name).toUpperCase())}</text>
+      <text x="${W / 2}" y="${m + 21.5}" text-anchor="middle" font-size="3.3">${esc(P.location || '')}</text>
+      <text x="${W / 2}" y="${m + 26.5}" text-anchor="middle" font-size="3">${pl.claimant || L.claimant ? 'Claimant / owner: ' + esc(pl.claimant || L.claimant) : ''}</text>
+      <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" fill="none" stroke="#111" stroke-width="0.3"/>
+      <clipPath id="cb"><rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}"/></clipPath><g clip-path="url(#cb)">`;
+    // tie line (may run off the box)
+    const t0 = c.tie, c1 = c.corners[0];
+    s += `<line x1="${f(X(t0))}" y1="${f(Y(t0))}" x2="${f(X(c1))}" y2="${f(Y(c1))}" stroke="#111" stroke-width="0.25" stroke-dasharray="2 1.2"/>`;
+    const tin = X(t0) > box.x && X(t0) < box.x + box.w && Y(t0) > box.y && Y(t0) < box.y + box.h;
+    if (tin) s += `<path d="M${f(X(t0))} ${f(Y(t0) - 2.4)}l2 3.4h-4z" fill="#fff" stroke="#111" stroke-width="0.3"/><text x="${f(X(t0) + 2.6)}" y="${f(Y(t0) + 1)}" font-size="2.6">${esc(L.tie.name || 'Tie point')}</text>`;
+    s += `<path d="M${c.corners.map(p => f(X(p)) + ' ' + f(Y(p))).join('L')}Z" fill="#f2f2f2" stroke="#111" stroke-width="0.5"/>`;
+    c.corners.forEach((p, i) => {
+      const q = c.corners[(i + 1) % c.corners.length], v = G.inverse(p, q);
+      const mx = (X(p) + X(q)) / 2, my = (Y(p) + Y(q)) / 2;
+      let ang = Math.atan2(Y(q) - Y(p), X(q) - X(p)) * 180 / Math.PI; if (ang > 90) ang -= 180; if (ang < -90) ang += 180;
+      let nx = -(Y(q) - Y(p)), ny = X(q) - X(p); const ln = Math.hypot(nx, ny) || 1; nx /= ln; ny /= ln;
+      if ((mx - X(c.centroid)) * nx + (my - Y(c.centroid)) * ny < 0) { nx = -nx; ny = -ny; }
+      const lx = mx + nx * 2.2, ly = my + ny * 2.2;
+      s += `<text x="${f(lx)}" y="${f(ly)}" font-size="2.3" text-anchor="middle" dominant-baseline="middle" transform="rotate(${f(ang, 1)} ${f(lx)} ${f(ly)})">${esc(G.fmtBearing(v.az, 'dms', mo))} · ${v.d.toFixed(2)} m</text>`;
+      s += `<circle cx="${f(X(p))}" cy="${f(Y(p))}" r="0.7" fill="#fff" stroke="#111" stroke-width="0.3"/><text x="${f(X(p) + 1.2)}" y="${f(Y(p) - 1.2)}" font-size="2.6" font-weight="700">${i + 1}</text>`;
+    });
+    s += `<text x="${f(X(c.centroid))}" y="${f(Y(c.centroid))}" text-anchor="middle" font-size="3.4" font-weight="700">${esc(L.name)}</text><text x="${f(X(c.centroid))}" y="${f(Y(c.centroid) + 4)}" text-anchor="middle" font-size="2.8">${fx(c.area, 0)} sq.m</text></g>`;
+    if (!tin) s += `<text x="${box.x + 3}" y="${box.y + box.h - 3}" font-size="2.6">Tie line: ${esc(G.fmtBearing(c.finalTie.az, 'dms', mo))}, ${c.finalTie.d.toFixed(2)} m from ${esc(L.tie.name || 'tie point')} to corner 1</text>`;
+    // north arrow & scale
+    s += `<g transform="translate(${box.x + box.w - 10} ${box.y + 12})"><path d="M0 -8L3.5 4L0 1.5L-3.5 4Z" fill="#111"/><text y="9" text-anchor="middle" font-size="3.4" font-weight="700">N</text></g>`;
+    const barM = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000].find(v => v * k >= 18) || 5000;
+    s += `<g transform="translate(${box.x + 4} ${box.y + 6})"><rect width="${f(barM * k)}" height="1.2" fill="#111"/><rect x="${f(barM * k / 2)}" width="${f(barM * k / 2)}" height="1.2" fill="#fff" stroke="#111" stroke-width="0.2"/><text y="4.4" font-size="2.4">0</text><text x="${f(barM * k)}" y="4.4" font-size="2.4" text-anchor="end">${barM} m</text><text y="-1.4" font-size="2.6" font-weight="700">SCALE 1:${scale.toLocaleString('en-US')}</text></g>`;
+    // vicinity map
+    const vb = { x: m + 2, y: box.y + box.h + 4, w: 88, h: 64 };
+    s += `<rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="none" stroke="#111" stroke-width="0.3"/>`;
+    if (pl.vicinity) s += `<image href="${pl.vicinity}" x="${vb.x + 0.5}" y="${vb.y + 0.5}" width="${vb.w - 1}" height="${vb.h - 7}" preserveAspectRatio="xMidYMid meet"/>`;
+    else s += `<text x="${vb.x + vb.w / 2}" y="${vb.y + vb.h / 2 - 2}" text-anchor="middle" font-size="3" fill="#777">Add a vicinity map image</text>`;
+    s += `<text x="${vb.x + vb.w / 2}" y="${vb.y + vb.h - 2}" text-anchor="middle" font-size="2.8" font-weight="700">VICINITY MAP · NOT TO SCALE</text>`;
+    // lot data table
+    const tx = vb.x + vb.w + 4, tw = W - m - 2 - tx;
+    let ty = vb.y;
+    const rh = 4.2, rows = [{ line: 'TP–1', az: c.finalTie.az, d: c.finalTie.d }].concat(c.finalLines.map((v, i) => ({ line: (i + 1) + '–' + ((i + 1) % c.corners.length + 1), az: v.az, d: v.d })));
+    const maxRows = Math.floor((vb.h - 10) / rh);
+    s += `<rect x="${tx}" y="${ty}" width="${tw}" height="${vb.h}" fill="none" stroke="#111" stroke-width="0.3"/><text x="${tx + tw / 2}" y="${ty + 4.2}" text-anchor="middle" font-size="3" font-weight="700">LOT DATA</text>`;
+    ty += 6;
+    s += `<line x1="${tx}" y1="${ty}" x2="${tx + tw}" y2="${ty}" stroke="#111" stroke-width="0.2"/><text x="${tx + 2}" y="${ty + 3}" font-size="2.4" font-weight="700">LINE</text><text x="${tx + 16}" y="${ty + 3}" font-size="2.4" font-weight="700">BEARING</text><text x="${tx + tw - 2}" y="${ty + 3}" font-size="2.4" font-weight="700" text-anchor="end">DIST. (m)</text>`;
+    ty += 4.2;
+    rows.slice(0, maxRows).forEach(r => {
+      s += `<text x="${tx + 2}" y="${ty + 3}" font-size="2.4">${r.line}</text><text x="${tx + 16}" y="${ty + 3}" font-size="2.4">${esc(G.fmtBearing(r.az, 'dms', mo))}</text><text x="${tx + tw - 2}" y="${ty + 3}" font-size="2.4" text-anchor="end">${r.d.toFixed(2)}</text>`;
+      ty += rh;
+    });
+    if (rows.length > maxRows) s += `<text x="${tx + 2}" y="${ty + 3}" font-size="2.2" fill="#555">+ ${rows.length - maxRows} more lines — see technical description</text>`;
+    // title block
+    const tb = { y: vb.y + vb.h + 4, h: H - m - 2 - (vb.y + vb.h + 4) };
+    const g = toLL(c.centroid);
+    s += `<rect x="${m + 2}" y="${tb.y}" width="${W - 2 * m - 4}" height="${tb.h}" fill="none" stroke="#111" stroke-width="0.3"/>
+      <text x="${m + 5}" y="${tb.y + 5}" font-size="2.7">Area: <tspan font-weight="700">${esc(G.numberWords(Math.round(c.area)))} (${Math.round(c.area).toLocaleString('en-US')}) SQUARE METERS</tspan></text>
+      <text x="${m + 5}" y="${tb.y + 9.5}" font-size="2.5">Grid: ${esc(sys().label)}${g ? ' · Lot centre ' + G.fmtDMS(g.lat, 1) + ' N, ' + G.fmtDMS(g.lon, 1) + ' E (WGS 84)' : ''}</text>
+      <text x="${m + 5}" y="${tb.y + 14}" font-size="2.5">${pl.surveyNo || L.surveyNo ? 'Survey no.: ' + esc(pl.surveyNo || L.surveyNo) + ' · ' : ''}${pl.date ? 'Date: ' + esc(pl.date) : ''}</text>
+      <text x="${W - m - 40}" y="${tb.y + tb.h - 13}" text-anchor="middle" font-size="3" font-weight="700">${esc((P.surveyor || '').toUpperCase())}</text>
+      <line x1="${W - m - 72}" y1="${tb.y + tb.h - 11.5}" x2="${W - m - 8}" y2="${tb.y + tb.h - 11.5}" stroke="#111" stroke-width="0.2"/>
+      <text x="${W - m - 40}" y="${tb.y + tb.h - 8}" text-anchor="middle" font-size="2.5">Geodetic Engineer${P.license ? ' · PRC Lic. No. ' + esc(P.license) : ''}</text>
+      <text x="${W - m - 40}" y="${tb.y + tb.h - 4}" text-anchor="middle" font-size="2.5">${esc(P.company || '')}</text>
+      <text x="${m + 5}" y="${tb.y + tb.h - 4}" font-size="2.2" fill="#555">Prepared with E.ROV GeoPlot</text>`;
+    s += '</svg>';
+    return { svg: s, scale };
+  }
+  VIEWS.plan = el => {
+    const P = S.project; P.plan = P.plan || {};
+    const L = lot(), c = comp(L);
+    el.innerHTML = header('Location plan', 'An A4 location plan with lot data, tie line and vicinity map. Fill in the title details and export.') + exampleBanner() +
+      `<div class="work"><div class="stack"><div class="panel">${lotChips(false)}
+        ${c.ok ? `<div class="stack" style="margin-top:10px">
+          <label class="f"><span>Plan title</span><input id="plT" value="${esc(P.plan.title || '')}" placeholder="${esc(L.name)}, Psd-04-012345"></label>
+          <label class="f"><span>Location</span><input id="plL" value="${esc(P.location || '')}" placeholder="Brgy., municipality, province"></label>
+          <div class="grid2"><label class="f"><span>Claimant / owner</span><input id="plC" value="${esc(P.plan.claimant || L.claimant || '')}"></label>
+          <label class="f"><span>Survey no.</span><input id="plS" value="${esc(P.plan.surveyNo || L.surveyNo || '')}"></label></div>
+          <div class="grid2"><label class="f"><span>Date</span><input id="plD" value="${esc(P.plan.date || '')}" placeholder="${new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' })}"></label>
+          <label class="f"><span>Scale 1:</span><input id="plSc" class="num" inputmode="numeric" value="${esc(P.plan.scale || '')}" placeholder="auto"></label></div>
+          <div class="grid2"><label class="f"><span>Geodetic engineer</span><input id="plG" value="${esc(P.surveyor || '')}"></label>
+          <label class="f"><span>PRC license no.</span><input id="plLic" value="${esc(P.license || '')}"></label></div>
+          <div><span class="hint">Vicinity map</span><div class="btns" style="margin-top:4px"><label class="btn sm">Choose image<input type="file" id="plV" accept="image/*" hidden></label>${P.plan.vicinity ? '<button class="btn sm ghost danger" id="plVx">Remove</button>' : ''}</div>
+          <p class="hint">A screenshot from Google Maps around the lot works well. Kept with the project.</p></div>
+          <div class="btns"><button class="btn primary" id="plPng">${icon('download')}PNG (300 dpi)</button><button class="btn" id="plSvg">${icon('download')}SVG</button>${!S.inFrame ? '<button class="btn" id="plPrint">Print</button>' : ''}</div>
+        </div>` : `<div class="callout warn" style="margin-top:10px">This lot is incomplete. Fix it in Plot TD first.</div>`}
+      </div></div><div class="stack plotcol"><div class="sheetwrap" id="sheet"></div></div></div>`;
+    const draw = () => { if (!c.ok) return; const r = planSVG(lot(), comp(lot()), S.project); $('#sheet', el).innerHTML = r.svg; S.planScale = r.scale; };
+    draw();
+    refreshHook = draw;
+    bindLotChips(el);
+    if (!c.ok) return;
+    const bind = (id, fn) => { $(id, el).oninput = e => { fn(e.target.value); markDirty(); draw(); }; };
+    bind('#plT', v => P.plan.title = v); bind('#plL', v => P.location = v); bind('#plC', v => P.plan.claimant = v);
+    bind('#plS', v => P.plan.surveyNo = v); bind('#plD', v => P.plan.date = v); bind('#plSc', v => P.plan.scale = v.replace(/[^\d]/g, ''));
+    bind('#plG', v => P.surveyor = v); bind('#plLic', v => P.license = v);
+    $('#plV', el).onchange = e => {
+      const f = e.target.files[0]; if (!f) return;
+      // downscale to keep the project document small
+      const img = new Image();
+      img.onload = () => {
+        const mx = 900, s = Math.min(1, mx / Math.max(img.width, img.height));
+        const cv = document.createElement('canvas'); cv.width = img.width * s; cv.height = img.height * s;
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        P.plan.vicinity = cv.toDataURL('image/jpeg', 0.78); markDirty(); render();
+      };
+      img.src = URL.createObjectURL(f);
+    };
+    const vx = $('#plVx', el); if (vx) vx.onclick = () => { P.plan.vicinity = ''; markDirty(); render(); };
+    $('#plSvg', el).onclick = () => saveFile(safeName(lot().name) + '_location_plan.svg', planSVG(lot(), comp(lot()), P).svg);
+    $('#plPng', el).onclick = () => {
+      const svg = planSVG(lot(), comp(lot()), P).svg;
+      const img = new Image();
+      img.onload = () => {
+        const cv = document.createElement('canvas'); cv.width = 2480; cv.height = 3508;
+        const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height); ctx.drawImage(img, 0, 0, cv.width, cv.height);
+        cv.toBlob(b => saveFile(safeName(lot().name) + '_location_plan.png', b), 'image/png');
+      };
+      img.onerror = () => toast('Could not render the image. Try SVG instead.');
+      img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+    };
+    const pp = $('#plPrint', el); if (pp) pp.onclick = () => window.print();
+  };
+
+  /* ----- Contours ----- */
+  function parseXYZ(text) {
+    const pts = [];
+    for (const line of String(text || '').split(/\r?\n/)) {
+      const nums = line.match(/-?\d[\d,]*\.?\d*/g);
+      if (!nums || nums.length < 3) continue;
+      const v = nums.map(x => parseFloat(x.replace(/,/g, '')));
+      // name,N,E,Z or N,E,Z
+      const [N, E, Z] = v.length >= 4 && Math.abs(v[0]) < 100000 && Math.abs(v[1]) > 1000 ? v.slice(1, 4) : v.slice(0, 3);
+      if ([N, E, Z].every(isFinite)) pts.push({ N, E, Z });
+    }
+    return pts;
+  }
+  VIEWS.contours = el => {
+    const T = S.project.topo = S.project.topo || { text: '', interval: 1, index: 5, maxEdge: 0 };
+    el.innerHTML = header('Contours', 'Generate contour lines from spot elevations: one point per line as N, E, Z (a point name in front is fine).') + exampleBanner() +
+      `<div class="work"><div class="stack"><div class="panel">
+        <textarea id="cT" rows="9" placeholder="1, 1600012.40, 500231.10, 24.35&#10;2, 1600015.80, 500240.62, 24.81">${esc(T.text)}</textarea>
+        <div class="btns" style="margin-top:6px"><label class="btn sm">Load CSV/TXT<input type="file" id="cF" accept=".csv,.txt,text/plain" hidden></label><button class="btn sm ghost" id="cSample">Generate sample terrain</button></div>
+        <div class="grid3" style="margin-top:10px">
+          <label class="f"><span>Interval (m)</span><input id="cI" class="num" type="number" step="0.05" min="0.05" value="${T.interval}"></label>
+          <label class="f"><span>Index every</span><input id="cX" class="num" type="number" min="2" step="1" value="${T.index}"></label>
+          <label class="f"><span>Max triangle side (m)</span><input id="cM" class="num" type="number" min="0" step="1" value="${T.maxEdge || 0}"></label>
+        </div>
+        <p class="hint">Max triangle side stops contours from bridging across gaps or concave edges. 0 = no limit.</p>
+        <div id="cStat"></div>
+        <div class="btns" style="margin-top:8px"><button class="btn" id="cDxf">${icon('download')}DXF (3D contours)</button><label class="hint" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cLots" ${S.cLots ? 'checked' : ''}> Show lots</label></div>
+      </div></div><div class="stack plotcol sticky-plot"><div id="plotHost"></div></div></div>`;
+    let res = null, pts = [];
+    const compute = () => {
+      pts = parseXYZ(T.text);
+      const iv = Math.max(0.05, +T.interval || 1);
+      if (pts.length >= 3) {
+        const range = Math.max(...pts.map(p => p.Z)) - Math.min(...pts.map(p => p.Z));
+        if (range / iv > 400) { res = { error: 'That interval gives over 400 contour levels. Use a larger interval.' }; }
+        else res = G.contours(pts, iv, { indexEvery: Math.max(2, +T.index || 5), maxEdge: +T.maxEdge || 0 });
+      } else res = null;
+      const st = $('#cStat', el);
+      st.innerHTML = !pts.length ? '<p class="hint">No points yet.</p>' : res && res.error ? `<div class="callout warn">${esc(res.error)}</div>` :
+        res ? `<div class="stats" style="margin-top:8px"><div class="stat"><div class="k">Points</div><div class="v">${pts.length}</div></div><div class="stat"><div class="k">Elevation range</div><div class="v">${fx(res.zmin, 2)}–${fx(res.zmax, 2)}</div><div class="s">m</div></div><div class="stat"><div class="k">Contours</div><div class="v">${res.levels.length}</div><div class="s">${res.tris.length} triangles</div></div></div>` : '<p class="hint">Need at least 3 points.</p>';
+    };
+    compute();
+    const cs = () => getComputedStyle(document.documentElement);
+    plotView = new PlotView($('#plotHost', el), () => {
+      const items = [];
+      const ink = cs().getPropertyValue('--ink').trim(), sv = cs().getPropertyValue('--survey').trim(), mu = cs().getPropertyValue('--muted').trim();
+      if (S.cLots) items.push(...lotScene(S.project.lots, { tie: false }).map(i => ({ ...i, fit: false })));
+      if (res && !res.error) {
+        res.levels.forEach(l => l.lines.forEach(ln => items.push({ t: 'line', pts: ln, stroke: sv, w: l.index ? 1.8 : 0.8 })));
+        res.levels.filter(l => l.index).forEach(l => {
+          const ln = l.lines.reduce((a, b) => (b.length > a.length ? b : a), []);
+          if (ln.length > 3) items.push({ t: 'text', p: ln[Math.floor(ln.length / 2)], text: fx(l.z, l.z % 1 ? 2 : 0), color: sv, size: 11 });
+        });
+      }
+      pts.slice(0, 3000).forEach(p => items.push({ t: 'pt', p, r: 1.6, stroke: mu, fill: mu }));
+      if (!items.length) return { items: [] };
+      return { items };
+    });
+    const redo = () => { compute(); plotView.fit(); markDirty(); };
+    refreshHook = () => plotView.draw();
+    $('#cT', el).oninput = debounce(e => { T.text = e.target.value; redo(); }, 400);
+    $('#cI', el).oninput = e => { T.interval = e.target.value; compute(); plotView.draw(); markDirty(); };
+    $('#cX', el).oninput = e => { T.index = e.target.value; compute(); plotView.draw(); markDirty(); };
+    $('#cM', el).oninput = e => { T.maxEdge = e.target.value; compute(); plotView.draw(); markDirty(); };
+    $('#cLots', el).onchange = e => { S.cLots = e.target.checked; plotView.draw(); };
+    $('#cF', el).onchange = e => { const f = e.target.files[0]; if (f) f.text().then(t => { T.text = t; $('#cT', el).value = t; redo(); }); };
+    $('#cSample', el).onclick = () => {
+      const L0 = comp(lot()); const c0 = L0.centroid || { N: 1600000, E: 500000 };
+      const lines = []; let k = 1;
+      for (let i = 0; i < 18; i++) for (let j = 0; j < 18; j++) {
+        const dn = (i - 9) * 6 + Math.sin(i * j) * 1.2, de = (j - 9) * 6 + Math.cos(i + j) * 1.2;
+        const z = 22 + 0.06 * de + 2.6 * Math.exp(-((dn - 12) ** 2 + (de + 8) ** 2) / 900) - 1.4 * Math.exp(-((dn + 20) ** 2 + (de - 18) ** 2) / 500);
+        lines.push(`${k++}, ${(c0.N + dn).toFixed(3)}, ${(c0.E + de).toFixed(3)}, ${z.toFixed(3)}`);
+      }
+      T.text = '# sample terrain (made up)\n' + lines.join('\n'); T.interval = 0.25; T.index = 4;
+      render();
+    };
+    $('#cDxf', el).onclick = () => {
+      if (!res || res.error) { toast('Nothing to export yet.'); return; }
+      const lay = [{ name: 'CONTOUR', color: 8, polylines: [] }, { name: 'CONTOUR-INDEX', color: 3, polylines: [], texts: [] }, { name: 'SPOT', color: 2, points: [] }];
+      res.levels.forEach(l => l.lines.forEach(ln => lay[l.index ? 1 : 0].polylines.push({ pts: ln.map(p => ({ ...p, Z: l.z })), closed: false })));
+      pts.forEach(p => lay[2].points.push(p));
+      saveFile(safeName(S.project.name) + '_contours.dxf', G.toDXF(lay));
+    };
+  };
+
+  /* ----- Geo <-> Grid ----- */
+  VIEWS.convert = el => {
+    refreshHook = null;
+    const C = S.conv = S.conv || { from: 'WGS84_GEO', to: S.project.sys, a: '', b: '', batch: '' };
+    const opts = sel => Object.entries(G.SYSTEMS).map(([k, s]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(s.label)}</option>`).join('');
+    const isGeo = k => G.SYSTEMS[k].kind === 'geo';
+    el.innerHTML = header('Geo ↔ Grid', 'Convert between PRS92 PTM zones, the old Luzon 1911 grid, UTM and latitude/longitude.') +
+      `<div class="work wide-left"><div class="stack"><div class="panel"><h2>Single point</h2>
+        <label class="f"><span>From</span><select id="vF">${opts(C.from)}</select></label>
+        <div class="grid2" style="margin-top:8px"><label class="f"><span>${isGeo(C.from) ? 'Latitude' : 'Northing'}</span><input id="vA" class="num" value="${esc(C.a)}" placeholder="${isGeo(C.from) ? "14 25 30.12 or 14.4250" : '1600000.000'}"></label>
+        <label class="f"><span>${isGeo(C.from) ? 'Longitude' : 'Easting'}</span><input id="vB" class="num" value="${esc(C.b)}" placeholder="${isGeo(C.from) ? "120 56 10.5" : '500000.000'}"></label></div>
+        <label class="f" style="margin-top:8px"><span>To</span><select id="vT">${opts(C.to)}</select></label>
+        <div id="vOut" style="margin-top:10px"></div></div>
+        <div class="callout info"><b>Datum shifts used.</b> PRS92: 7-parameter shift to WGS 84 (EPSG:4683 → 4326). Luzon 1911: 3-parameter shift. These are the published standard parameters; for control work, check against a known PRS92 monument in your area before relying on them.</div>
+      </div>
+      <div class="stack"><div class="panel"><h2>Batch</h2>
+        <p class="hint" style="margin-top:0">One point per line: <span class="kbd">name, ${isGeo(C.from) ? 'lat, long' : 'N, E'}</span>. Uses the From and To systems on the left.</p>
+        <textarea id="vBatch" rows="8">${esc(C.batch)}</textarea>
+        <div class="btns" style="margin-top:6px"><button class="btn primary" id="vGo">Convert list</button><button class="btn" id="vCsv" hidden>${icon('download')}CSV</button><button class="btn" id="vToTie" hidden>Add to tie points</button></div>
+        <div id="vBOut" style="margin-top:8px"></div></div></div></div>`;
+    const readPt = (sysk, a, b) => isGeo(sysk) ? { lat: G.parseAngle(a), lon: G.parseAngle(b) } : { N: parseFloat(String(a).replace(/,/g, '')), E: parseFloat(String(b).replace(/,/g, '')) };
+    const ok = p => Object.values(p).every(v => v != null && isFinite(v));
+    const fmtOut = (sysk, r) => isGeo(sysk) ? { a: G.fmtDMS(r.lat, 4), b: G.fmtDMS(r.lon, 4), ad: r.lat.toFixed(8), bd: r.lon.toFixed(8) } : { a: fx(r.N, 3), b: fx(r.E, 3) };
+    const one = () => {
+      const o = $('#vOut', el);
+      const p = readPt(C.from, C.a, C.b);
+      if (!ok(p)) { o.innerHTML = '<p class="hint">Enter a point to convert.</p>'; return; }
+      try {
+        const r = G.convert(p, C.from, C.to), f = fmtOut(C.to, r);
+        const wgs = G.convert(p, C.from, 'WGS84_GEO');
+        const zone = G.ptmZoneFor(wgs.lon);
+        let extra = '';
+        if (!isGeo(C.to)) { const sc = G.tmScaleConv(isGeo(C.from) && G.SYSTEMS[C.from].datum === G.SYSTEMS[C.to].datum ? p.lat : G.convert(p, C.from, G.SYSTEMS[C.to].datum === 'WGS84' ? 'WGS84_GEO' : 'PRS92_GEO').lat, wgs.lon, C.to); extra = `<div class="stat"><div class="k">Scale factor</div><div class="v">${sc.k.toFixed(7)}</div></div><div class="stat"><div class="k">Convergence</div><div class="v">${G.fmtDMS(sc.conv, 1)}</div></div>`; }
+        o.innerHTML = `<div class="stats"><div class="stat"><div class="k">${isGeo(C.to) ? 'Latitude' : 'Northing'}</div><div class="v">${f.a}</div>${f.ad ? `<div class="s">${f.ad}°</div>` : ''}</div>
+          <div class="stat"><div class="k">${isGeo(C.to) ? 'Longitude' : 'Easting'}</div><div class="v">${f.b}</div>${f.bd ? `<div class="s">${f.bd}°</div>` : ''}</div>${extra}</div>
+          <p class="hint">Point lies in PTM Zone ${['I', 'II', 'III', 'IV', 'V'][zone - 1]} (CM ${115 + 2 * zone}°).${/Z(\d)$/.test(C.to) && +C.to.slice(-1) !== zone ? ' <b style="color:var(--warn)">The target zone differs from the natural zone for this point.</b>' : ''}</p>
+          <button class="btn sm" id="vCopy">${icon('copy')}Copy result</button>`;
+        $('#vCopy', o).onclick = () => copyText(isGeo(C.to) ? f.ad + ', ' + f.bd : r.N.toFixed(3) + ', ' + r.E.toFixed(3));
+      } catch (e) { o.innerHTML = `<div class="callout warn">Could not convert that point.</div>`; }
+    };
+    one();
+    $('#vF', el).onchange = e => { C.from = e.target.value; render(); };
+    $('#vT', el).onchange = e => { C.to = e.target.value; one(); };
+    $('#vA', el).oninput = e => { C.a = e.target.value; one(); };
+    $('#vB', el).oninput = e => { C.b = e.target.value; one(); };
+    $('#vBatch', el).oninput = e => { C.batch = e.target.value; };
+    let batchRes = [];
+    $('#vGo', el).onclick = () => {
+      batchRes = [];
+      String(C.batch).split(/\r?\n/).forEach((line, i) => {
+        const parts = line.split(/[,\t;]+/).map(s => s.trim()).filter(Boolean);
+        if (parts.length < 2) return;
+        let name = '', a, b;
+        if (parts.length >= 3) [name, a, b] = parts; else [a, b] = parts;
+        const p = readPt(C.from, a, b);
+        if (!ok(p)) return;
+        try { batchRes.push({ name: name || String(i + 1), r: G.convert(p, C.from, C.to) }); } catch (e) { /* skip */ }
+      });
+      const o = $('#vBOut', el);
+      if (!batchRes.length) { o.innerHTML = '<p class="hint">No readable points.</p>'; return; }
+      o.innerHTML = `<div class="tblwrap"><table class="t"><thead><tr><th>Point</th><th class="n">${isGeo(C.to) ? 'Latitude' : 'Northing'}</th><th class="n">${isGeo(C.to) ? 'Longitude' : 'Easting'}</th></tr></thead><tbody>
+        ${batchRes.map(x => { const f = fmtOut(C.to, x.r); return `<tr><td>${esc(x.name)}</td><td class="n">${f.a}</td><td class="n">${f.b}</td></tr>`; }).join('')}</tbody></table></div>`;
+      $('#vCsv', el).hidden = false; $('#vToTie', el).hidden = isGeo(C.to);
+    };
+    $('#vCsv', el).onclick = () => saveFile('converted.csv', (isGeo(C.to) ? 'name,lat,lon\n' : 'name,northing,easting\n') + batchRes.map(x => isGeo(C.to) ? `${x.name},${x.r.lat.toFixed(9)},${x.r.lon.toFixed(9)}` : `${x.name},${x.r.N.toFixed(4)},${x.r.E.toFixed(4)}`).join('\n'));
+    $('#vToTie', el).onclick = () => Store.saveTies(batchRes.map(x => ({ name: x.name, N: x.r.N.toFixed(3), E: x.r.E.toFixed(3), sys: C.to, municipality: '', province: '', notes: 'Converted from ' + G.SYSTEMS[C.from].label }))).then(() => toast(batchRes.length + ' tie points saved')).catch(() => toast('Could not save tie points.'));
+  };
+
+  /* ----- Tie points ----- */
+  VIEWS.tiepoints = el => {
+    refreshHook = null;
+    const q = (S.tieQ || '').toLowerCase();
+    const list = S.tiepoints.filter(t => !q || [t.name, t.municipality, t.province, t.notes].join(' ').toLowerCase().includes(q));
+    const ed = S.tieEdit || null;
+    const sysOpts = sel => Object.entries(G.SYSTEMS).filter(([, s]) => s.kind === 'tm').map(([k, s]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(s.label)}</option>`).join('');
+    el.innerHTML = header('Tie points', S.mode === 'shared' ? 'Your team\'s list of BLLMs and other reference monuments, shared by everyone who uses this app.' : 'Your list of BLLMs and other reference monuments, kept in this browser.') +
+      `<div class="work wide-left"><div class="stack">
+        <div class="panel"><h2>${ed && ed.id ? 'Edit tie point' : 'Add tie point'}</h2>
+          <div class="stack">
+            <label class="f"><span>Name</span><input id="tpName" value="${esc(ed?.name || '')}" placeholder="BLLM No. 1, Cad. 512-D"></label>
+            <div class="grid2"><label class="f"><span>Municipality / city</span><input id="tpMun" value="${esc(ed?.municipality || '')}"></label><label class="f"><span>Province</span><input id="tpProv" value="${esc(ed?.province || '')}"></label></div>
+            <label class="f"><span>Coordinate system</span><select id="tpSys">${sysOpts(ed?.sys || S.project.sys)}</select></label>
+            <div class="grid2"><label class="f"><span>Northing</span><input id="tpN" class="num" inputmode="decimal" value="${esc(ed?.N || '')}"></label><label class="f"><span>Easting</span><input id="tpE" class="num" inputmode="decimal" value="${esc(ed?.E || '')}"></label></div>
+            <label class="f"><span>Notes</span><input id="tpNote" value="${esc(ed?.notes || '')}" placeholder="Source, condition, date recovered"></label>
+            <div class="btns"><button class="btn primary" id="tpSave">${ed && ed.id ? 'Save changes' : 'Add to list'}</button>${ed ? '<button class="btn" id="tpCancel">Cancel</button>' : ''}</div>
+          </div></div>
+        <div class="panel"><h2>Import & export</h2><p class="hint" style="margin-top:0">CSV columns: <span class="kbd">name, northing, easting, municipality, province</span>. Coordinates are taken in the system selected above.</p>
+          <div class="btns"><label class="btn">Import CSV<input type="file" id="tpImp" accept=".csv,.txt,text/csv,text/plain" hidden></label><button class="btn" id="tpExp" ${S.tiepoints.length ? '' : 'disabled'}>${icon('download')}Export CSV</button></div></div>
+        <div class="callout info">GeoPlot does not come with tie point data. Enter coordinates from your own LMB/DENR records so every lot is tied to values you have verified.</div>
+      </div>
+      <div class="stack"><div class="panel"><div class="row" style="margin-bottom:8px"><label class="f"><span>Search</span><input id="tpQ" value="${esc(S.tieQ || '')}" placeholder="Name, municipality, province"></label></div>
+        ${list.length ? `<div class="tblwrap"><table class="t"><thead><tr><th>Name</th><th>Place</th><th class="n">Northing</th><th class="n">Easting</th><th></th></tr></thead><tbody>
+          ${list.map(t => `<tr><td><b>${esc(t.name)}</b>${t.notes ? `<div class="hint">${esc(t.notes)}</div>` : ''}</td><td>${esc([t.municipality, t.province].filter(Boolean).join(', '))}<div class="hint">${esc(G.SYSTEMS[t.sys]?.label || '')}</div></td><td class="n">${fx(+t.N, 3)}</td><td class="n">${fx(+t.E, 3)}</td>
+          <td style="white-space:nowrap;text-align:right"><button class="btn sm" data-use="${t.id}">Use for ${esc(lot().name)}</button> <button class="btn sm ghost" data-edit="${t.id}">Edit</button> <button class="btn sm ghost danger" data-del="${t.id}" aria-label="Delete ${esc(t.name)}">${icon('trash')}</button></td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="empty"><h3>${S.tiepoints.length ? 'No matches' : 'No tie points yet'}</h3><p>${S.tiepoints.length ? 'Try another search.' : 'Add BLLMs and other monuments you use often, or import a CSV. Then pick them by name in Plot TD.'}</p></div>`}
+      </div></div></div>`;
+    $('#tpQ', el).oninput = debounce(e => { S.tieQ = e.target.value; render(); setTimeout(() => { const i = $('#tpQ'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }, 0); }, 300);
+    $('#tpSave', el).onclick = () => {
+      const t = { id: ed?.id, name: $('#tpName', el).value.trim(), municipality: $('#tpMun', el).value.trim(), province: $('#tpProv', el).value.trim(), sys: $('#tpSys', el).value, N: $('#tpN', el).value.replace(/,/g, '').trim(), E: $('#tpE', el).value.replace(/,/g, '').trim(), notes: $('#tpNote', el).value.trim() };
+      if (!t.name) { toast('Give the tie point a name.'); return; }
+      if (!isFinite(+t.N) || !isFinite(+t.E) || !t.N || !t.E) { toast('Enter numeric northing and easting.'); return; }
+      Store.saveTie(t).then(() => { S.tieEdit = null; toast('Saved ' + t.name); render(); }).catch(() => toast('Could not save. You may have view-only access.'));
+    };
+    const cn = $('#tpCancel', el); if (cn) cn.onclick = () => { S.tieEdit = null; render(); };
+    $('#tpExp', el).onclick = () => saveFile('tie_points.csv', 'name,northing,easting,municipality,province,system,notes\n' + S.tiepoints.map(t => [t.name, t.N, t.E, t.municipality, t.province, t.sys, t.notes].map(v => '"' + String(v ?? '').replace(/"/g, '""') + '"').join(',')).join('\n'));
+    $('#tpImp', el).onchange = e => {
+      const f = e.target.files[0]; if (!f) return;
+      const sysk = $('#tpSys', el).value;
+      f.text().then(txt => {
+        const rows = [];
+        txt.split(/\r?\n/).forEach(line => {
+          const cells = (line.match(/("([^"]|"")*"|[^,\t;]+)/g) || []).map(s => s.replace(/^"|"$/g, '').replace(/""/g, '"').trim());
+          if (cells.length < 3) return;
+          const N = parseFloat(cells[1].replace(/,/g, '')), E = parseFloat(cells[2].replace(/,/g, ''));
+          if (!isFinite(N) || !isFinite(E)) return;
+          const ex = S.tiepoints.find(t => t.name === cells[0]);
+          rows.push({ id: ex?.id, name: cells[0], N: String(N), E: String(E), municipality: cells[3] || '', province: cells[4] || '', sys: G.SYSTEMS[cells[5]] ? cells[5] : sysk, notes: cells[6] || '' });
+        });
+        if (!rows.length) { toast('No rows with name, northing, easting found.'); return; }
+        toast('Importing ' + rows.length + ' tie points…');
+        Store.saveTies(rows).then(() => toast(rows.length + ' tie points imported')).catch(() => toast('Import stopped partway. You may have view-only access.'));
+      });
+    };
+    el.addEventListener('click', e => {
+      const u = e.target.closest('[data-use]'), ed2 = e.target.closest('[data-edit]'), d = e.target.closest('[data-del]');
+      if (u) {
+        const t = S.tiepoints.find(x => x.id === u.dataset.use), g = tieInProjectSys(t);
+        if (!g) { toast('Could not convert this tie point to the project grid.'); return; }
+        const L = lot(); L.tie = { name: t.name, N: g.N.toFixed(3), E: g.E.toFixed(3) }; markDirty(); toast('Tie point set for ' + L.name); go('plot');
+      }
+      if (ed2) { S.tieEdit = clone(S.tiepoints.find(x => x.id === ed2.dataset.edit)); render(); }
+      if (d) { const t = S.tiepoints.find(x => x.id === d.dataset.del); confirmBox('Delete tie point?', `${t.name} will be removed${S.mode === 'shared' ? ' for everyone' : ''}.`, 'Delete', () => Store.deleteTie(t.id).then(() => toast('Deleted')).catch(() => toast('Could not delete.'))); }
+    });
+  };
+
+  /* ---------------- boot ---------------- */
+  function boot() {
+    const th = lsGet('geoplot.theme', null); if (th) document.documentElement.setAttribute('data-theme', th);
+    buildNav();
+    const h = (location.hash || '').replace('#', '');
+    if (MODS.some(m => m.id === h)) S.view = h;
+    capsReady = Store.init().catch(e => { console.warn(e); S.mode = 'local'; });
+    openProject(exampleProject(), true);
+    capsReady.then(() => { updateHeader(); });
+    window.addEventListener('beforeunload', e => { if (S.dirty && !S.isExample) { e.preventDefault(); e.returnValue = ''; } });
+  }
+  boot();
+})();
