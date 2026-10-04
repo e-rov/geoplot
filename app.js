@@ -774,10 +774,10 @@
     }
     return tessWorkerP;
   }
-  async function ocrOnDevice(canvas, table, onProgress) {
+  async function ocrOnDevice(canvas, psm, onProgress) {
     tessProgress = onProgress;
     const w = await tessWorker();
-    await w.setParameters({ tessedit_pageseg_mode: table ? '6' : '3', preserve_interword_spaces: '1' });
+    await w.setParameters({ tessedit_pageseg_mode: psm, preserve_interword_spaces: '1' });
     const { data } = await w.recognize(canvas);
     tessProgress = null;
     return { text: data.text || '', conf: data.confidence, words: (data.words || []).map(x => ({ text: x.text, conf: x.confidence })) };
@@ -850,6 +850,65 @@
     ctx.putImageData(id, 0, 0);
     return cv;
   }
+  // Keep only dark ink: divides by the local paper brightness (handles shadows), which drops
+  // faint show-through from the next page, then optionally erases long table border lines.
+  function inkOnly(src, frac, dropLines) {
+    const W = src.width, H = src.height;
+    const id = src.getContext('2d').getImageData(0, 0, W, H), d = id.data, n = W * H;
+    const g = new Float32Array(n);
+    for (let i = 0, j = 0; j < n; i += 4, j++) g[j] = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+    const r = Math.max(5, Math.floor(Math.min(W, H) / 60)) | 1, half = (Math.min(r, 15) - 1) >> 1, br = r * 2;
+    const tmp = new Float32Array(n), bg = new Float32Array(n);
+    // local maximum (paper level), separable
+    for (let y = 0; y < H; y++) { const o = y * W; for (let x = 0; x < W; x++) { let m = 0; for (let k = Math.max(0, x - half), e = Math.min(W - 1, x + half); k <= e; k++) if (g[o + k] > m) m = g[o + k]; tmp[o + x] = m; } }
+    for (let x = 0; x < W; x++) for (let y = 0; y < H; y++) { let m = 0; for (let k = Math.max(0, y - half), e = Math.min(H - 1, y + half); k <= e; k++) if (tmp[k * W + x] > m) m = tmp[k * W + x]; bg[y * W + x] = m; }
+    // box blur of the paper level, separable running sums
+    const blur = (a, b, len, stride, count, step) => {
+      for (let c = 0; c < count; c++) {
+        const base = c * step; let acc = 0;
+        for (let k = -br; k <= br; k++) acc += a[base + Math.min(len - 1, Math.max(0, k)) * stride];
+        for (let i = 0; i < len; i++) {
+          b[base + i * stride] = acc / (2 * br + 1);
+          acc += a[base + Math.min(len - 1, i + br + 1) * stride] - a[base + Math.max(0, i - br) * stride];
+        }
+      }
+    };
+    blur(bg, tmp, W, 1, H, W); blur(tmp, bg, H, W, W, 1);
+    const ink = new Uint8Array(n);
+    for (let j = 0; j < n; j++) ink[j] = g[j] / Math.max(1, bg[j]) < frac ? 1 : 0;
+    if (dropLines) {
+      const minLen = Math.floor(Math.max(W, H) * 0.12), keep = ink.slice();
+      for (let y = 0; y < H; y++) { let s = -1; for (let x = 0; x <= W; x++) { const v = x < W && ink[y * W + x]; if (v && s < 0) s = x; if (!v && s >= 0) { if (x - s >= minLen) for (let k = s; k < x; k++) keep[y * W + k] = 0; s = -1; } } }
+      for (let x = 0; x < W; x++) { let s = -1; for (let y = 0; y <= H; y++) { const v = y < H && ink[y * W + x]; if (v && s < 0) s = y; if (!v && s >= 0) { if (y - s >= minLen) for (let k = s; k < y; k++) keep[k * W + x] = 0; s = -1; } } }
+      ink.set(keep);
+    }
+    const out = document.createElement('canvas'); out.width = W; out.height = H;
+    const oc = out.getContext('2d'), od = oc.createImageData(W, H), o = od.data;
+    for (let j = 0, i = 0; j < n; j++, i += 4) { const v = ink[j] ? 0 : 255; o[i] = o[i + 1] = o[i + 2] = v; o[i + 3] = 255; }
+    oc.putImageData(od, 0, 0);
+    return out;
+  }
+  function copyCanvas(cv) { const c = document.createElement('canvas'); c.width = cv.width; c.height = cv.height; c.getContext('2d').drawImage(cv, 0, 0); return c; }
+  // Reader passes, best first (tested on real LMB forms with show-through and table borders)
+  const OCR_PASSES = [
+    { label: 'dark ink, no borders', make: c => inkOnly(c, 0.65, true), psm: '6' },
+    { label: 'contrast boost', make: c => enhanceForOCR(copyCanvas(c)), psm: '6' },
+    { label: 'darkest ink only', make: c => inkOnly(c, 0.55, true), psm: '6' },
+    { label: 'dark ink', make: c => inkOnly(c, 0.65, false), psm: '6' },
+    { label: 'page layout', make: c => enhanceForOCR(copyCanvas(c)), psm: '3' }
+  ];
+  function judgeOCR(text) {
+    const t = G.cleanOCR(text), p = G.parseTDText(t);
+    const lines = p.kind === 'bearings' ? p.lines.length : p.corners.length;
+    let prec = 0, closes = false;
+    if (p.kind === 'bearings' && p.lines.length >= 3) {
+      const c = G.computeLot({ tie: { N: 0, E: 0 }, tieLine: p.tieLine, lines: p.lines });
+      prec = c.closure && isFinite(c.closure.precision) ? c.closure.precision : 1e9;
+      closes = prec >= 2000;
+    } else if (p.kind === 'coords' && p.corners.length >= 3) closes = true;
+    const score = (closes ? 1000 : 0) + lines * 10 + (p.tieLine ? 5 : 0) + Math.min(4, Math.log10(prec + 1));
+    return { t, p, lines, prec, closes, score };
+  }
   const canvasBlob = (cv, type, q) => new Promise(res => cv.toBlob(res, type, q));
 
   VIEWS.scan = el => {
@@ -857,14 +916,18 @@
     const sc = S.scan = S.scan || { engine: null, table: false, rot: 0, crop: null, img: null, name: '' };
     const viaClaudeAi = () => !!(S.caps.sample && S.caps.sampleImages);
     const hasApi = () => !S.inFrame && !!apiCfg().key;
-    const pickDefault = () => viaClaudeAi() ? 'claude' : hasApi() ? 'api' : 'device';
+    const pickDefault = () => viaClaudeAi() ? 'claude' : hasApi() ? 'api' : !S.inFrame ? 'share' : 'device';
     el.innerHTML = header('Scan to plot', 'Photograph a title, plan or technical description, or paste its text. Every line is shown for checking before it goes on the plot.') + exampleBanner() +
       `<div class="work wide-left"><div class="stack">
         <div class="panel" id="scPhoto"><h2>Photo</h2>
           <div class="btns">
-            <label class="btn primary">${icon('scan')}Take photo<input type="file" id="scCam" accept="image/*" capture="environment" hidden></label>
-            <label class="btn">Choose from gallery<input type="file" id="scGal" accept="image/*" hidden></label>
+            <button class="btn primary" id="scCamBtn">${icon('scan')}Take photo</button>
+            <button class="btn" id="scGalBtn">Choose photo</button>
           </div>
+          <input type="file" id="scCam" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0">
+          <input type="file" id="scGal" accept="image/*" tabindex="-1" aria-hidden="true" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0">
+          <p class="hint" style="margin:6px 0 0">You can also paste a copied photo here${S.inFrame ? '' : ' or drop an image file on this panel'}.</p>
+          <div class="callout warn" id="scPickHelp" hidden style="margin-top:10px"></div>
           <div id="scEditor" ${sc.img ? '' : 'hidden'} style="margin-top:10px">
             <p class="hint" style="margin:0 0 6px">Drag across the photo to select only the technical description or lot data table. A tight crop reads much better.</p>
             <div style="position:relative;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--sunk);touch-action:none"><canvas id="scCv" style="display:block;width:100%;cursor:crosshair"></canvas></div>
@@ -875,8 +938,17 @@
             <h3>Read with</h3>
             <div class="chips" role="radiogroup" aria-label="Reading engine" id="scEng"></div>
             <p class="hint" id="scEngNote" style="margin:6px 0 0"></p>
-            <label class="hint" style="display:flex;gap:6px;align-items:center;margin-top:8px"><input type="checkbox" id="scTable" ${sc.table ? 'checked' : ''}> The crop is a table (lot data / coordinate table)</label>
             <div class="btns" style="margin-top:10px"><button class="btn primary" id="scGo">Read photo</button><button class="btn" id="scStop" hidden>Stop</button></div>
+            <div class="callout info" id="scShareSteps" hidden style="margin-top:10px">
+              <b>In the Claude app:</b>
+              <ol style="margin:6px 0 8px;padding-left:20px">
+                <li>Choose <b>Claude</b> in the Share menu. The photo is attached.</li>
+                <li>If the instruction isn't in the message box, long-press it and tap <b>Paste</b> (it's already copied). Send.</li>
+                <li>When Claude answers, tap <b>Copy</b> under the answer.</li>
+                <li>Come back here and tap the button below.</li>
+              </ol>
+              <div class="btns"><button class="btn primary" id="scPasteAns">Paste Claude's answer</button><button class="btn sm" id="scCopyPrompt">Copy instruction again</button></div>
+            </div>
             <div id="scProg" style="margin-top:8px" hidden><div style="height:6px;background:var(--sunk);border-radius:3px;overflow:hidden"><div id="scBar" style="height:100%;width:0;background:var(--accent);transition:width .2s"></div></div><p class="hint" id="scProgT" style="margin:4px 0 0"></p></div>
           </div>
         </div>
@@ -943,8 +1015,9 @@
     const txt = $('#scText', el);
     const readText = (opts = {}) => {
       const raw = txt.value;
+      if (/"lots"\s*:/.test(raw)) { try { fromAI(looseJSON(raw)); return; } catch (e) { toast('Claude\'s answer looks cut off. Copy the whole answer and paste it again.', 5000); return; } }
       const r = G.parseTDText(raw, { firstIsTie: $('#scTie', el).checked, swapNE: $('#scSwap', el).checked });
-      showResult([{ name: '', tieName: r.tieName, tieLine: r.tieLine, lines: r.lines, corners: r.kind === 'coords' ? r.corners : [] }], { text: raw, lowConf: opts.lowConf });
+      showResult([{ name: r.name || '', tieName: r.tieName, tieLine: r.tieLine, lines: r.lines.map(({ b, d }) => ({ b, d })), corners: r.kind === 'coords' ? r.corners : [] }], { text: raw, lowConf: opts.lowConf });
     };
     txt.oninput = () => { S.scanText = txt.value; };
     $('#scTie', el).onchange = e => { S.scanFirstTie = e.target.checked; };
@@ -1020,26 +1093,68 @@ Rules: bearings as quadrant bearings "N dd mm ss E"; distances in metres as numb
       try { sc.img = await loadImageFile(f); sc.rot = 0; sc.crop = null; sc.name = f.name; $('#scEditor', el).hidden = false; drawEditor(); setEngines(); }
       catch (e) { toast('That file could not be opened as a photo.'); }
     };
+    // Some app viewers (e.g. the Claude mobile app) silently ignore file pickers or the camera.
+    // Detect "nothing opened" and offer the routes that do work.
+    const ARTIFACT_URL = 'https://claude.ai/artifact/VtcWhrvsB8vMExmfo7N6Zr';
+    const pickHelp = $('#scPickHelp', el);
+    const showPickHelp = which => {
+      pickHelp.hidden = false;
+      pickHelp.innerHTML = (which === 'cam' ? '<b>The camera did not open here.</b> Try <b>Choose photo</b>; your phone may offer the camera from there. ' : '<b>The photo picker did not open here.</b> ') +
+        (S.inFrame ? `The Claude phone app may block cameras and file pickers inside pages. Other ways that work:
+          <ul style="margin:6px 0 0;padding-left:18px">
+            <li>Open this page in <b>Chrome</b>: <a href="${ARTIFACT_URL}" target="_blank" rel="noopener">${ARTIFACT_URL.replace('https://', '')}</a> <button class="btn sm" id="scCopyUrl">Copy link</button> — sign in to claude.ai there; photos work normally.</li>
+            <li>Take the photo with your camera app, open it in Gallery, <b>copy</b> it, then come back and paste here (long-press in the Text box below → Paste).</li>
+            <li>Use the installed GeoPlot app (GeoPlot-PWA.zip).</li></ul>` : 'Check that the browser is allowed to use the camera and storage, then try again.');
+      const cp = $('#scCopyUrl', pickHelp); if (cp) cp.onclick = () => copyText(ARTIFACT_URL, 'Link copied. Paste it into Chrome.');
+    };
+    const openPicker = (inp, which) => {
+      pickHelp.hidden = true;
+      let reacted = false;
+      const mark = () => { reacted = true; };
+      const onVis = () => { if (document.hidden) mark(); };
+      window.addEventListener('blur', mark, { once: true });
+      document.addEventListener('visibilitychange', onVis);
+      inp.addEventListener('cancel', mark, { once: true });
+      inp.addEventListener('change', mark, { once: true });
+      try { inp.click(); } catch (e) { /* fall through to help */ }
+      setTimeout(() => {
+        window.removeEventListener('blur', mark); document.removeEventListener('visibilitychange', onVis);
+        if (!reacted && !document.hidden) showPickHelp(which);
+      }, 2500);
+    };
+    $('#scCamBtn', el).onclick = () => openPicker($('#scCam', el), 'cam');
+    $('#scGalBtn', el).onclick = () => openPicker($('#scGal', el), 'gal');
     $('#scCam', el).onchange = e => { takeFile(e.target.files[0]); e.target.value = ''; };
     $('#scGal', el).onchange = e => { takeFile(e.target.files[0]); e.target.value = ''; };
+    // paste a copied image anywhere on the scan screen
+    el.addEventListener('paste', e => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const it = items.find(i => i.kind === 'file' && /^image\//.test(i.type));
+      if (it) { e.preventDefault(); takeFile(it.getAsFile()); pickHelp.hidden = true; toast('Photo pasted'); }
+    });
+    // drop an image file on the photo panel
+    const ph = $('#scPhoto', el);
+    ph.addEventListener('dragover', e => { if ([...(e.dataTransfer?.items || [])].some(i => i.kind === 'file')) { e.preventDefault(); } });
+    ph.addEventListener('drop', e => { const f = [...(e.dataTransfer?.files || [])].find(x => /^image\//.test(x.type)); if (f) { e.preventDefault(); takeFile(f); } });
     const rotCrop = (c, dir) => !c ? null : dir > 0 ? { x: 1 - c.y - c.h, y: c.x, w: c.h, h: c.w } : { x: c.y, y: 1 - c.x - c.w, w: c.h, h: c.w };
     $('#scRotL', el).onclick = () => { sc.rot = (sc.rot + 270) % 360; sc.crop = rotCrop(sc.crop, -1); drawEditor(); };
     $('#scRotR', el).onclick = () => { sc.rot = (sc.rot + 90) % 360; sc.crop = rotCrop(sc.crop, 1); drawEditor(); };
     $('#scCropX', el).onclick = () => { sc.crop = null; drawEditor(); };
-    $('#scTable', el).onchange = e => { sc.table = e.target.checked; };
 
     /* ---- engine choice ---- */
     const ENG = {
+      share: { label: 'Claude app · your plan', note: () => 'Sends the cropped photo to the Claude app on this phone. It uses your Claude plan, with no extra charge per scan. Copy Claude\'s answer and paste it back here.' },
       device: { label: 'On this phone · free', note: () => S.inFrame ? 'Reads the text on your device. It may not load inside claude.ai; the installed app always supports it.' : 'Reads the text on your phone. The first use downloads the reader (about 15 MB); after that it works offline. Typed documents read well; faded or handwritten ones need more checking.' },
       claude: { label: 'Claude', note: () => 'Most accurate, especially on old or faded titles. Uses your Claude account.' },
       api: { label: 'Claude · API key', note: () => hasApi() ? 'Most accurate. Sends the cropped photo to Claude using the API key on this phone; each scan is billed to that key (a few US cents).' : 'Set up an API key below to use Claude in the installed app.' }
     };
     function setEngines() {
       const box = $('#scEng', el); if (!box) return;
-      const avail = ['device'].concat(viaClaudeAi() ? ['claude'] : []).concat(!S.inFrame ? ['api'] : []);
+      const avail = (viaClaudeAi() ? ['claude'] : []).concat(!S.inFrame ? ['share'] : []).concat(['device']).concat(!S.inFrame ? ['api'] : []);
       if (!sc.engine || !avail.includes(sc.engine) || (sc.engine === 'api' && !hasApi())) sc.engine = pickDefault();
       box.innerHTML = avail.map(k => `<button class="chip" role="radio" aria-checked="${sc.engine === k}" aria-pressed="${sc.engine === k}" data-eng="${k}">${esc(ENG[k].label)}</button>`).join('');
       $('#scEngNote', el).textContent = ENG[sc.engine].note();
+      const go = $('#scGo', el); if (go) go.textContent = sc.engine === 'share' ? 'Send to Claude app' : 'Read photo';
     }
     $('#scEng', el)?.addEventListener('click', e => {
       const b = e.target.closest('[data-eng]'); if (!b) return;
@@ -1074,26 +1189,83 @@ Rules: bearings as quadrant bearings "N dd mm ss E"; distances in metres as numb
     const prog = (pct, text) => { $('#scProg', el).hidden = false; $('#scBar', el).style.width = Math.round(pct * 100) + '%'; $('#scProgT', el).textContent = text; };
     const busy = on => { $('#scGo', el).disabled = on; $('#scStop', el).hidden = !on; };
     $('#scStop', el).onclick = () => { if (ctl) ctl.abort(); };
+    const sharePrompt = () => aiPrompt('\n\nThe photo is attached. Put the JSON in one ```json code block and write nothing else, so it can be pasted into the GeoPlot app.');
+    const copyPrompt = async () => { try { await navigator.clipboard.writeText(sharePrompt()); return true; } catch (e) { return false; } };
+    async function shareToClaude() {
+      const copied = await copyPrompt();
+      const out = croppedCanvas(sc.img, sc.rot, sc.crop, 4000, 1800);
+      const blob = await canvasBlob(out, 'image/jpeg', 0.9);
+      const file = new File([blob], 'geoplot-scan.jpg', { type: 'image/jpeg' });
+      $('#scShareSteps', el).hidden = false;
+      let shared = false;
+      if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+        try { await navigator.share({ files: [file], text: sharePrompt(), title: 'GeoPlot scan' }); shared = true; }
+        catch (e) { if (e && e.name === 'AbortError') { prog(0, 'Sharing cancelled. Tap Send to Claude app to try again.'); return; } }
+      }
+      if (!shared) {
+        // no Share menu: save the cropped photo and open Claude, then attach it there
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'geoplot-scan.jpg'; document.body.appendChild(a); a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+        window.open('https://claude.ai/new', '_blank', 'noopener');
+        prog(1, 'Saved the cropped photo as geoplot-scan.jpg and opened Claude. Attach that photo, paste the instruction' + (copied ? ' (already copied)' : '') + ', and send.');
+      } else prog(1, copied ? 'Sent. Paste the instruction in Claude if it is missing; it is copied.' : 'Sent to the Share menu.');
+    }
+    $('#scCopyPrompt', el).onclick = async () => {
+      if (await copyPrompt()) toast('Instruction copied');
+      else { txt.value = sharePrompt(); txt.focus(); txt.select(); toast('Could not copy automatically. The instruction is in the Text box: long-press and copy it.', 5000); }
+    };
+    $('#scPasteAns', el).onclick = async () => {
+      try {
+        const t = await navigator.clipboard.readText();
+        if (t && t.trim()) { txt.value = S.scanText = t; readText(); toast('Answer pasted'); $('#scOut', el).scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+      } catch (e) { /* clipboard reading not allowed: manual paste */ }
+      txt.value = ''; txt.focus(); txt.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      toast('Long-press in the Text box, tap Paste, then tap Read text.', 5000);
+    };
     $('#scGo', el).onclick = async () => {
       if (!sc.img) { toast('Take or choose a photo first.'); return; }
+      if (sc.engine === 'share') { shareToClaude(); return; }
       busy(true);
       ctl = new AbortController();
       const myCtl = ctl;
       try {
         if (sc.engine === 'device') {
           prog(0.02, 'Preparing the photo…');
-          const cvs = enhanceForOCR(croppedCanvas(sc.img, sc.rot, sc.crop, 3600, 2400));
-          const STAGES = { 'loading tesseract core': ['Downloading the reader (first time only)…', 0.05, 0.2], 'initializing tesseract': ['Starting the reader…', 0.2, 0.25], 'loading language traineddata': ['Downloading English text model (first time only)…', 0.25, 0.45], 'initializing api': ['Starting the reader…', 0.45, 0.5], 'recognizing text': ['Reading the text…', 0.5, 1] };
-          const res = await new Promise((resolve, reject) => {
-            myCtl.signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { code: 'cancelled' })));
-            ocrOnDevice(cvs, sc.table, m => { const s = STAGES[m.status]; if (s && !myCtl.signal.aborted) prog(s[1] + (s[2] - s[1]) * (m.progress || 0), s[0]); }).then(resolve, reject);
-          });
-          const cleaned = G.cleanOCR(res.text);
-          txt.value = S.scanText = cleaned;
-          const low = [...new Set(res.words.filter(w => w.conf < 65 && /\d/.test(w.text)).map(w => w.text.trim()).filter(Boolean))].slice(0, 14);
-          prog(1, `Done · reader confidence ${Math.round(res.conf || 0)}%. Check the result on the right; fix digits in the Text box if needed.`);
+          const base = croppedCanvas(sc.img, sc.rot, sc.crop, 3600, 2400);
+          const STAGES = { 'loading tesseract core': ['Downloading the reader (first time only)…', 0, 0.4], 'initializing tesseract': ['Starting the reader…', 0.4, 0.5], 'loading language traineddata': ['Downloading English text model (first time only)…', 0.5, 0.9], 'initializing api': ['Starting the reader…', 0.9, 1], 'recognizing text': ['Reading', 0, 1] };
+          const aborted = new Promise((_, reject) => myCtl.signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { code: 'cancelled' }))));
+          let best = null, bestRes = null, tried = 0, merged = null;
+          const texts = [];
+          for (let k = 0; k < OCR_PASSES.length; k++) {
+            const pass = OCR_PASSES[k], span = 1 / OCR_PASSES.length;
+            prog(k * span + 0.01, `Pass ${k + 1} of up to ${OCR_PASSES.length}: ${pass.label}…`);
+            await new Promise(r => setTimeout(r, 30)); // let the progress text paint before heavy work
+            const img = pass.make(base);
+            const res = await Promise.race([aborted, ocrOnDevice(img, pass.psm, m => {
+              const st = STAGES[m.status]; if (!st || myCtl.signal.aborted) return;
+              if (m.status === 'recognizing text') prog(k * span + span * (m.progress || 0), `Pass ${k + 1} of up to ${OCR_PASSES.length}: reading (${pass.label})…`);
+              else prog(st[1] * 0.3 + (st[2] - st[1]) * 0.3 * (m.progress || 0), st[0]);
+            })]);
+            tried++;
+            texts.push(res.text);
+            const j = judgeOCR(res.text);
+            if (!best || j.score > best.score) { best = j; bestRes = res; }
+            merged = G.mergeTD(texts);
+            const tieHint = texts.some(x => /tie\s*lines?|\bfrom\s+(?:bllm|bbm|mbm|plss)/i.test(x));
+            const mergedCloses = merged.kind === 'bearings' ? merged.lines.length >= 3 && merged.precision >= 2000 : merged.kind === 'coords' && merged.corners.length >= 3;
+            if (mergedCloses && (merged.tieLine || !tieHint)) break; // closes (and has its tie line): stop early
+          }
+          const mClose = merged && merged.kind === 'bearings' && merged.lines.length >= 3 && merged.precision >= 2000;
+          if (merged && (mClose || merged.lines.length > best.lines)) {
+            best = { t: merged.text, closes: mClose, prec: merged.precision };
+          }
+          txt.value = S.scanText = best.t;
+          const low = best.closes ? [] : [...new Set(bestRes.words.filter(w => w.conf < 65 && /\d/.test(w.text)).map(w => w.text.trim()).filter(Boolean))].slice(0, 14);
+          prog(1, best.closes
+            ? `Done in ${tried} pass${tried > 1 ? 'es' : ''}. The lines close${best.prec < 1e8 ? ' at 1:' + Math.round(best.prec).toLocaleString('en-US') : ''}. Still check each line against the document.`
+            : `Read in ${tried} passes, but the result does not close. Fix the wrong digits in the Text box and tap Read text, or use Claude for this document.`);
           readText({ lowConf: low });
-          if (!cleaned.trim()) toast('No text found. Crop tighter, rotate the photo upright, or retake it in better light.', 5000);
+          if (!best.t.trim()) toast('No text found. Crop tighter, rotate the photo upright, or retake it in better light.', 5000);
         } else {
           prog(0.15, 'Sending the cropped photo to Claude… this can take up to a minute.');
           const out = croppedCanvas(sc.img, sc.rot, sc.crop, 4000, 1568);
@@ -2060,6 +2232,7 @@ Rules: bearings as quadrant bearings "N dd mm ss E"; distances in metres as numb
     capsReady = Store.init().catch(e => { console.warn(e); S.mode = 'local'; });
     openProject(exampleProject(), true);
     capsReady.then(() => { updateHeader(); });
+    window.__geoplotBooted = true;
     window.addEventListener('beforeunload', e => { if (S.dirty && !S.isExample) { e.preventDefault(); e.returnValue = ''; } });
   }
   boot();

@@ -320,19 +320,31 @@
     const pairs = [];
     for (const f of found) {
       const rest = t.slice(f.end, f.end + 40);
-      const dm = /^[\s.,;:]*(?:distance\s*(?:of)?\s*)?(\d[\d,]*(?:\.\d+)?)\s*(m\b|m\.|meters?|mts?\.?|metres?)?/i.exec(rest);
+      const dm = /^[\s.,;:\-=_~'"*]*(?:distance\s*(?:of)?\s*)?(\d[\d,]*(?:\.\d+)?)\s*(m\b|m\.|meters?|mts?\.?|metres?)?/i.exec(rest);
       if (!dm) continue;
       const d = parseFloat(dm[1].replace(/,/g, ''));
       if (!(d > 0)) continue;
-      pairs.push({ az: f.az, d, idx: f.idx, after: t.slice(f.end + dm[0].length, f.end + dm[0].length + 120) });
+      const ls = t.lastIndexOf('\n', f.idx) + 1;
+      const lm = /(\d{1,3})\s*[-–—=.:]+\s*(\d{1,3})\D{0,6}$/.exec(t.slice(ls, f.idx));
+      pairs.push({ az: f.az, d, idx: f.idx, label: lm ? +lm[1] + '-' + +lm[2] : '', after: t.slice(f.end + dm[0].length, f.end + dm[0].length + 120) });
     }
-    const res = { tieName: '', tieLine: null, lines: [], corners: [], kind: 'none' };
+    const res = { tieName: '', tieLine: null, lines: [], corners: [], kind: 'none', name: '' };
+    const ln = /\bLOT\s+(?:NO\.?\s*)?(\d[\w]*(?:\s*[-–—]+\s*[\w]+)*)/i.exec(t);
+    if (ln) res.name = 'Lot ' + ln[1].replace(/\s*[-–—]+\s*/g, '-');
     if (pairs.length) {
       res.kind = 'bearings';
       let tieIdx = -1;
+      // Tabulated LMB forms put the tie line in its own box AFTER the lot lines:
+      // "Tie lines from BLLM#1, CAD-459-D, Indang Cadastre, to Corner Marked "1": ... N 45 05 W 3333.42"
+      const th = /tie\s*lines?\s*(?:from|fr\.?)\s+([\s\S]{3,140}?)[\s,]*to\s+corner/i.exec(t) || /tie\s*lines?\s*(?:from|fr\.?)\s+([^:\n]{3,80})/i.exec(t);
+      if (th) {
+        const k = pairs.findIndex(p => p.idx > th.index);
+        if (k >= 0) { tieIdx = k; res.tieName = th[1].replace(/\s+/g, ' ').replace(/[\s,;:]+$/, '').trim(); }
+      }
       // Narrative: first pair followed by "from <tie point>"
-      const fm = pairs.length ? /^[\s,;.]*(?:from|fr\.)\s+([^;\n]+?)(?:;|\n|,\s*thence|$)/i.exec(pairs[0].after) : null;
-      if (fm) { tieIdx = 0; res.tieName = fm[1].trim().replace(/[.,]$/, ''); }
+      const fm = tieIdx < 0 && pairs.length ? /^[\s,;.]*(?:from|fr\.)\s+([^;\n]+?)(?:;|\n|,\s*thence|$)/i.exec(pairs[0].after) : null;
+      if (tieIdx >= 0) { /* found above */ }
+      else if (fm) { tieIdx = 0; res.tieName = fm[1].trim().replace(/[.,]$/, ''); }
       else {
         // Tabulated: a row labelled tie / TP / BLLM before the first pair
         const before = t.slice(Math.max(0, pairs[0].idx - 40), pairs[0].idx);
@@ -342,6 +354,7 @@
       const fmt = az => G.fmtBearing(az, 'plain');
       pairs.forEach((p, i) => {
         const row = { b: fmt(p.az), d: p.d.toFixed(2) };
+        if (p.label) row.label = p.label;
         if (i === tieIdx) res.tieLine = row; else res.lines.push(row);
       });
       const tn = /(BLLM|BBM|MBM|PLSS|MON\.?|TIE\s*POINT)\s*(?:No\.?|#)?\s*[\w-]+(?:\s*,\s*[^;\n]{0,40})?/i.exec(t);
@@ -370,6 +383,8 @@
   G.cleanOCR = function (text) {
     let t = String(text || '').replace(/\r/g, '');
     t = t.replace(/[‘’`´′]/g, "'").replace(/[“”″]/g, '"').replace(/ /g, ' ');
+    // currency / look-alike glyphs that OCR uses for E and W in bearing columns
+    t = t.replace(/[€£]/g, 'E').replace(/\bVV\b/g, 'W');
     // letters read inside numbers: 1O5 -> 105, 2l.5 -> 21.5
     for (let k = 0; k < 2; k++) {
       t = t.replace(/(\d)[Oo](?=[\d.,])/g, '$10').replace(/([\d.])[Oo](?=\d)/g, '$10');
@@ -390,6 +405,20 @@
     // doubled or lower-case quadrant letters: "Ss." "sS." "s." "Nn." before a bearing angle
     t = t.replace(/(^|[^A-Za-z])(?:[Ss]{2}|s)\s*\.?(?=\s*\d{1,2}\s*(?:deg|°))/gm, '$1S.');
     t = t.replace(/(^|[^A-Za-z])(?:[Nn]{2}|n)\s*\.?(?=\s*\d{1,2}\s*(?:deg|°))/gm, '$1N.');
+    // doubled / mixed-case quadrant letters: "Ww" "WW" "vv" -> W ; "Ee" -> E
+    t = t.replace(/\b(?:W[wW]|[vV]{2}|w[wW])\b/g, 'W').replace(/\bE[eE]\b/g, 'E');
+    // "OO" / "oo" read for 00 before a degree or minute mark: N OO' 10' E
+    t = t.replace(/(^|[\s.NS])[Oo]{2}(?=\s*(?:[°'"*’]|\d{1,2}\s*[°'"*’]))/gm, '$100').replace(/(^|[\s.NS])[Oo](\d)(?=\s*[°'"*’])/gm, '$10$2');
+    // "SO" / "So" read for 50 after the degrees: S 34 SO' E
+    t = t.replace(/(\d\s*[°'"*’]?\s+)[Ss5][Oo](?=\s*[°'"*’])/g, '$150');
+    // "S$" -> S ; stray letter glued before E/W after the minutes: "50' FE" -> "50' E"
+    t = t.replace(/\bS\$/g, 'S').replace(/(\d\s*['’°"*])\s*[FPLIT1l]([EW])\b/g, '$1 $2');
+    // E/W glued to the distance: "W13.00 m." -> "W 13.00 m."
+    t = t.replace(/(\d\s*['’°"*]?\s*[EWew])(?=\d)/g, '$1 ');
+    // minute mark read as ) ] } before the E/W letter: "05) w" -> "05' W"
+    t = t.replace(/(\d{1,2})\s*[)\]}]\s*(?=[EWew]\b)/g, "$1' ");
+    // table borders and stray brackets between columns: "1-2 | N 00° 10' E | 10.00 m."
+    t = t.replace(/[|¦\[\]{}]/g, ' ').replace(/[“”«»‘]/g, ' ');
     // N./S./E./W. followed by comma
     t = t.replace(/\b([NSEW]),(?=\s)/g, '$1.');
     t = t.replace(/\bVV\b/g, 'W');
@@ -398,6 +427,73 @@
     // split decimal: 25. 00 m -> 25.00 m
     t = t.replace(/(\d)\s*\.\s+(\d{2})(\s*(?:m\b|m\.|meters?))/gi, '$1.$2$3');
     return t;
+  };
+
+  /* Combine several OCR passes of the same document. For tables with row labels (1-2, 2-3 …)
+   * each row is decided by majority vote across passes; otherwise the best-closing pass wins.
+   * Returns a parse result plus canonical text that parses back to the same thing. */
+  G.mergeTD = function (texts) {
+    const parses = texts.map(x => G.parseTDText(G.cleanOCR(x)));
+    const tidy = x => String(x || '').replace(/[—–]+/g, '-').replace(/-{2,}/g, '-').replace(/\s+/g, ' ').trim();
+    const vote = arr => { const m = new Map(); arr.filter(Boolean).map(tidy).forEach((v, i) => { const e = m.get(v) || { n: 0, i, v }; e.n++; m.set(v, e); }); const w = [...m.values()].sort((a, b) => b.n - a.n || a.i - b.i)[0]; return w ? w.v : ''; };
+    const nameVote = vote(parses.map(p => p.name)), tieNameVote = vote(parses.map(p => p.tieName));
+    const closeOf = p => {
+      if (p.kind !== 'bearings' || p.lines.length < 3) return 0;
+      const c = G.computeLot({ tie: { N: 0, E: 0 }, tieLine: p.tieLine, lines: p.lines });
+      return c.closure && isFinite(c.closure.precision) ? c.closure.precision : 1e9;
+    };
+    const labelled = parses.filter(p => p.kind === 'bearings' && p.lines.filter(l => l.label).length >= 3);
+    let merged = null;
+    if (labelled.length) {
+      const votes = new Map();
+      labelled.forEach((p, pi) => p.lines.forEach(l => {
+        if (!l.label) return;
+        const [a, b] = l.label.split('-').map(Number);
+        if (!(b === a + 1 || (b === 1 && a > 2))) return; // only real traverse legs
+        const key = l.b + '|' + l.d;
+        if (!votes.has(l.label)) votes.set(l.label, new Map());
+        const m = votes.get(l.label); const v = m.get(key) || { n: 0, first: pi, row: l }; v.n++; m.set(key, v);
+      }));
+      const labels = [...votes.keys()].sort((x, y) => +x.split('-')[0] - +y.split('-')[0]);
+      const lines = labels.map(lb => [...votes.get(lb).values()].sort((u, v) => v.n - u.n || u.first - v.first)[0].row);
+      const tv = new Map();
+      parses.forEach((p, pi) => { if (p.tieLine) { const k = p.tieLine.b + '|' + p.tieLine.d; const v = tv.get(k) || { n: 0, first: pi, row: p.tieLine, name: p.tieName }; v.n++; tv.set(k, v); } });
+      const tie = [...tv.values()].sort((u, v) => v.n - u.n || u.first - v.first)[0];
+      merged = { kind: 'bearings', lines, tieLine: tie ? tie.row : null, tieName: (tie && tie.name) || (parses.find(p => p.tieName) || {}).tieName || '', name: (parses.find(p => p.name) || {}).name || '', corners: [] };
+    }
+    // best single pass (by closure then line count) as fallback / comparison
+    let best = null, bestScore = -1;
+    parses.forEach(p => {
+      const pr = closeOf(p), n = p.kind === 'bearings' ? p.lines.length : p.corners.length;
+      const sc = (pr >= 2000 ? 1e6 : 0) + n * 100 + (p.tieLine ? 50 : 0) + Math.min(40, pr / 1000);
+      if (sc > bestScore) { bestScore = sc; best = p; }
+    });
+    if (merged) {
+      const pm = closeOf(merged), pb = closeOf(best);
+      if (!(pm >= 2000) && pb >= 2000 && best.lines.length >= merged.lines.length) merged = null;
+    }
+    const out = merged || best || { kind: 'none', lines: [], corners: [], tieLine: null, tieName: '', name: '' };
+    if (!out.tieLine) { const withTie = parses.find(p => p.tieLine); if (withTie) { out.tieLine = withTie.tieLine; out.tieName = out.tieName || withTie.tieName; } }
+    out.name = nameVote || out.name || '';
+    out.tieName = tieNameVote || tidy(out.tieName);
+    out.precision = closeOf(out);
+    out.statedArea = texts.map(G.statedArea).find(Boolean) || null;
+    out.text = G.canonicalTD(out);
+    return out;
+  };
+  // clean, editable text that G.parseTDText reads back to the same result
+  G.canonicalTD = function (p) {
+    if (p.kind === 'coords') return p.corners.map(c => `${c.name} ${c.N} ${c.E}`).join('\n');
+    const n = p.lines.length, out = [];
+    if (p.name) out.push(p.name.toUpperCase());
+    if (p.tieLine) {
+      out.push(`Tie line from ${p.tieName || 'tie point'} to corner 1:`);
+      out.push(`TP-1  ${p.tieLine.b}  ${p.tieLine.d} m.`);
+      out.push('Lines:');
+    }
+    p.lines.forEach((l, i) => out.push(`${i + 1}-${i === n - 1 ? 1 : i + 2}  ${l.b}  ${l.d} m.`));
+    if (p.statedArea) out.push(`Area stated on the document: (${p.statedArea}) SQUARE METERS`);
+    return out.join('\n');
   };
 
   // area stated in the document text, e.g. "FIVE HUNDRED (559) SQUARE METERS" or "559 sq.m."
